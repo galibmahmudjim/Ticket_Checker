@@ -1,0 +1,12 @@
+services:
+  moviebot:
+    build: .
+    container_name: moviebot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - moviebot-data:/app/data
+
+volumes:
+  moviebot-data:

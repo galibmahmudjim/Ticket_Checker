@@ -1,0 +1,27 @@
+{
+  "name": "moviebot",
+  "version": "1.0.0",
+  "description": "Discord alert bot for Cineplex ticket availability",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "run-once": "node dist/runOnce.js",
+    "refresh-token": "tsx scripts/refreshToken.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "playwright": "^1.46.0",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

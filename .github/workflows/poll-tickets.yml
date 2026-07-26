@@ -1,0 +1,47 @@
+name: Poll Cineplex tickets
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: poll-tickets
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Poll for ticket availability
+        run: npm run run-once
+        env:
+          CINEPLEX_MOVIE_ID: "1688"
+          CINEPLEX_MOVIE_NAME: "Spider-Man: Brand New Day"
+          CINEPLEX_DEVICE_KEY: ${{ secrets.CINEPLEX_DEVICE_KEY }}
+          CINEPLEX_AUTH_TOKEN: ${{ secrets.CINEPLEX_AUTH_TOKEN }}
+          CINEPLEX_AUTH_HEADER_NAME: authorization
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
+          STATE_FILE_PATH: ./state.json
+
+      - name: Commit updated state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git diff --staged --quiet || git commit -m "chore: update ticket-watch state"
+          git push
