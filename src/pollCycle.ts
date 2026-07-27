@@ -2,54 +2,66 @@ import type { AppConfig } from "./config.js";
 import { fetchShows, CineplexAuthError } from "./cineplexClient.js";
 import { findNewEntries } from "./showtimeDiff.js";
 import { formatShowSessions, sendDiscordMessage } from "./discordNotifier.js";
-import { getChannelIds } from "./channelStore.js";
+import { getChannelIds, getChannelStates, saveChannelState } from "./channelStore.js";
 import { log } from "./logger.js";
 import type { PollState } from "./stateStore.js";
 
 /**
  * Runs exactly one poll: fetches get-shows sessions for the fixed
- * movieId/location/showDate in config, diffs them against the previous state, and
- * posts to every registered channel (src/channelStore.ts — populated dynamically as
- * the bot is added to servers, see discordGateway.ts) when genuinely new sessions
- * appear. On the first-ever poll (state.hasPolledBefore === false) it only records a
- * baseline and never alerts, since there's nothing to compare against yet. On auth
- * failure it posts a warning exactly once (tracked via state.authAlertSent) asking
- * for a fresh token, then stays silent on repeat failures until a poll succeeds
- * again, at which point the flag resets so a future failure alerts again. Returns
- * the updated PollState for the caller to persist; never throws — poll and Discord
- * failures are logged and swallowed so a single bad cycle doesn't crash the caller's
- * loop.
+ * movieId/location/showDate in config once, then diffs them independently against
+ * each registered channel's own fingerprint history (src/channelStore.ts), so each
+ * channel only gets alerted about sessions genuinely new *to it* rather than
+ * inheriting other channels' "already seen" state. A channel's first poll posts
+ * whatever is currently on sale (worded as a "now watching" catch-up rather than
+ * "new"), so a server that just added the bot immediately sees existing showtimes
+ * instead of staying silent until something changes. On auth failure it posts a warning
+ * exactly once (tracked via the global state.authAlertSent) asking for a fresh
+ * token, then stays silent on repeat failures until a poll succeeds again, at which
+ * point the flag resets so a future failure alerts again. Returns the updated global
+ * PollState for the caller to persist; never throws — poll and Discord failures
+ * (including a single channel's) are logged and swallowed so they don't crash the
+ * caller's loop or block other channels.
  */
 export async function runPollCycle(config: AppConfig, state: PollState): Promise<PollState> {
   try {
     const sessions = await fetchShows(config);
-    const { newEntries, allFingerprints } = findNewEntries(sessions, state.fingerprints);
+    const channels = await getChannelStates(config.databaseUrl);
 
-    if (state.hasPolledBefore && newEntries.length > 0) {
-      const channelIds = await getChannelIds(config.databaseUrl);
-      if (channelIds.length > 0) {
-        const lines = formatShowSessions(newEntries).map((line) => `- ${line}`);
-        await sendDiscordMessage(
-          config.discordBotToken,
-          channelIds,
-          `🎬 **New showtime(s) available for ${config.movieName}!**\n${lines.join("\n")}\nBook now: https://ticket.cineplexbd.com`,
-        );
-        log("info", "Sent Discord alert for new showtimes", {
-          count: newEntries.length,
-          channels: channelIds.length,
+    for (const channel of channels) {
+      try {
+        const { newEntries, allFingerprints } = findNewEntries(sessions, channel.fingerprints);
+
+        if (newEntries.length > 0) {
+          const heading = channel.hasPolledBefore
+            ? `🎬 **New showtime(s) available for ${config.movieName}!**`
+            : `🎬 **Now watching ${config.movieName} — showtime(s) currently on sale:**`;
+          const lines = formatShowSessions(newEntries).map((line) => `- ${line}`);
+          await sendDiscordMessage(
+            config.discordBotToken,
+            [channel.channelId],
+            `${heading}\n${lines.join("\n")}\nBook now: https://ticket.cineplexbd.com`,
+          );
+          log("info", "Sent Discord alert", {
+            count: newEntries.length,
+            channelId: channel.channelId,
+            firstPoll: !channel.hasPolledBefore,
+          });
+        }
+
+        await saveChannelState(config.databaseUrl, {
+          channelId: channel.channelId,
+          fingerprints: allFingerprints,
+          hasPolledBefore: true,
         });
-      } else {
-        log("warn", "New showtimes found but no channels registered yet", {
-          count: newEntries.length,
+      } catch (channelError) {
+        log("error", "Failed to process channel; will retry next poll", {
+          channelId: channel.channelId,
+          error: channelError instanceof Error ? channelError.message : String(channelError),
         });
       }
     }
 
-    return {
-      fingerprints: allFingerprints,
-      hasPolledBefore: true,
-      authAlertSent: false,
-    };
+    return { authAlertSent: false };
   } catch (error) {
     if (error instanceof CineplexAuthError) {
       log("warn", "Cineplex auth token expired or invalid", { message: error.message });
@@ -66,7 +78,7 @@ export async function runPollCycle(config: AppConfig, state: PollState): Promise
         } catch (notifyError) {
           log("error", "Failed to send auth-expiry alert", { error: String(notifyError) });
         }
-        return { ...state, authAlertSent: true };
+        return { authAlertSent: true };
       }
       return state;
     }

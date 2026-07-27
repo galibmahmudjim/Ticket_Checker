@@ -1,14 +1,7 @@
 import type { Pool } from "pg";
 import { getPool } from "./db.js";
 
-interface PollStateRow {
-  readonly fingerprints: readonly string[];
-  readonly auth_alert_sent: boolean;
-}
-
 export interface PollState {
-  readonly fingerprints: ReadonlySet<string>;
-  readonly hasPolledBefore: boolean;
   readonly authAlertSent: boolean;
 }
 
@@ -25,7 +18,6 @@ async function ensureTable(databaseUrl: string): Promise<Pool> {
     await db.query(`
       CREATE TABLE IF NOT EXISTS poll_state (
         id SMALLINT PRIMARY KEY DEFAULT 1,
-        fingerprints TEXT[] NOT NULL DEFAULT '{}',
         auth_alert_sent BOOLEAN NOT NULL DEFAULT false
       )
     `);
@@ -35,39 +27,29 @@ async function ensureTable(databaseUrl: string): Promise<Pool> {
 }
 
 /**
- * Reads the persisted poll state from the poll_state table (single row, id = 1).
- * Returns { fingerprints, authAlertSent, hasPolledBefore: true } if that row already
- * exists (even with zero fingerprints, meaning a prior poll found no showtimes), or a
- * zeroed-out state with hasPolledBefore: false if this is the very first poll ever.
+ * Reads the persisted global poll state (single row, id = 1) — currently just the
+ * one-time auth-alert flag; per-channel fingerprint/baseline tracking lives in
+ * channelStore.ts instead, since that needs to be independent per channel. Returns
+ * { authAlertSent: false } if no row exists yet.
  */
 export async function loadState(databaseUrl: string): Promise<PollState> {
   const db = await ensureTable(databaseUrl);
-  const result = await db.query<PollStateRow>(
-    "SELECT fingerprints, auth_alert_sent FROM poll_state WHERE id = 1",
+  const result = await db.query<{ auth_alert_sent: boolean }>(
+    "SELECT auth_alert_sent FROM poll_state WHERE id = 1",
   );
-
-  const row = result.rows[0];
-  if (!row) {
-    return { fingerprints: new Set(), hasPolledBefore: false, authAlertSent: false };
-  }
-
-  return {
-    fingerprints: new Set(row.fingerprints),
-    hasPolledBefore: true,
-    authAlertSent: row.auth_alert_sent,
-  };
+  return { authAlertSent: result.rows[0]?.auth_alert_sent ?? false };
 }
 
 /**
- * Upserts the given poll state into the poll_state table (single row, id = 1).
+ * Upserts the given global poll state into the poll_state table (single row, id = 1).
  * Returns nothing; this becomes the new baseline for the next poll.
  */
 export async function saveState(databaseUrl: string, state: PollState): Promise<void> {
   const db = await ensureTable(databaseUrl);
   await db.query(
-    `INSERT INTO poll_state (id, fingerprints, auth_alert_sent)
-     VALUES (1, $1, $2)
-     ON CONFLICT (id) DO UPDATE SET fingerprints = $1, auth_alert_sent = $2`,
-    [[...state.fingerprints], state.authAlertSent],
+    `INSERT INTO poll_state (id, auth_alert_sent)
+     VALUES (1, $1)
+     ON CONFLICT (id) DO UPDATE SET auth_alert_sent = $1`,
+    [state.authAlertSent],
   );
 }

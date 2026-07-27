@@ -17,10 +17,12 @@ date/location you configure in advance.
   (times, halls, seat prices) on sale for that fixed date, plus `appsource` /
   `device-key` headers and a Bearer auth token.
 - `src/showtimeDiff.ts` fingerprints each returned session entry and diffs against
-  the previous poll's fingerprints (persisted via `src/stateStore.ts` to a `poll_state`
-  table in Postgres, `DATABASE_URL`) to find genuinely new sessions (e.g. a showtime
-  just went on sale for the watched date). The table is created automatically on
-  first connect — no manual migration needed.
+  fingerprints stored **per channel** (in `discord_channels`, see `channelStore.ts`) to
+  find sessions genuinely new *to that channel*. Tracking is per-channel, not global,
+  so a server that adds the bot later doesn't inherit another server's "already seen"
+  history and silently miss everything currently on sale. A channel's first poll posts
+  whatever is on sale as a "now watching" catch-up; subsequent polls post only genuine
+  changes.
 - `src/discordGateway.ts` connects to Discord's Gateway (`GatewayIntentBits.Guilds`
   only — not a privileged intent, no portal toggle needed) purely to detect which
   servers the bot is a member of, and pick a channel to post alerts in for each one:
@@ -30,7 +32,10 @@ date/location you configure in advance.
   event). The chosen channel is registered via `src/channelStore.ts`, in a
   `discord_channels` table in Postgres (auto-created, same as `poll_state`). No
   manual channel configuration: adding the bot to a server with permission to post
-  somewhere is what makes that server start receiving alerts.
+  somewhere is what makes that server start receiving alerts. Removal is handled too
+  — `guildDelete` (bot kicked while running) and a startup prune (kicked while the
+  process was down) delete the registration, so polls don't keep failing with
+  "Unknown Channel" against a server the bot can no longer reach.
 - `src/discordNotifier.ts` posts the same message directly into every registered
   channel via the bot's REST API (`DISCORD_BOT_TOKEN`), independently — one channel's
   failure (e.g. permissions revoked there) doesn't block posting to the others. Also
@@ -138,10 +143,12 @@ showtime added to the watched date) is what triggers an alert.
 
 `src/db.ts` holds one shared connection pool (`DATABASE_URL`), used by both:
 
-- `src/stateStore.ts` — poll state (fingerprints of seen sessions, and the one-time
-  auth-alert flag) in a single-row `poll_state` table.
+- `src/stateStore.ts` — global state in a single-row `poll_state` table; currently
+  just the one-time auth-alert flag.
 - `src/channelStore.ts` — registered alert channels in a `discord_channels` table
-  (`guild_id`, `channel_id`, `added_at`).
+  (`guild_id`, `channel_id`, `fingerprints`, `has_polled_before`, `added_at`). The
+  seen-session fingerprints live here, per channel, rather than globally — see "How
+  it works" above for why.
 
 Both tables are created automatically on first connect via `CREATE TABLE IF NOT
 EXISTS` — no manual migration step. `index.ts` closes the shared pool explicitly on

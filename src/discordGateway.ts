@@ -7,7 +7,7 @@ import {
   type Guild,
   type TextChannel,
 } from "discord.js";
-import { registerGuildChannel } from "./channelStore.js";
+import { registerGuildChannel, unregisterGuild, getRegisteredGuildIds } from "./channelStore.js";
 import { log } from "./logger.js";
 
 /**
@@ -56,14 +56,36 @@ async function registerGuild(databaseUrl: string, guild: Guild): Promise<void> {
 }
 
 /**
+ * Deletes registered channels for guilds the bot is no longer a member of. Catches
+ * the case where it was removed from a server while this process wasn't running, so
+ * no guildDelete event was ever received — those rows would otherwise linger and
+ * fail on every poll with "Unknown Channel". Never throws.
+ */
+async function pruneStaleGuilds(databaseUrl: string, currentGuildIds: Set<string>): Promise<void> {
+  try {
+    const registered = await getRegisteredGuildIds(databaseUrl);
+    await Promise.all(
+      registered
+        .filter((guildId) => !currentGuildIds.has(guildId))
+        .map((guildId) => unregisterGuild(databaseUrl, guildId)),
+    );
+  } catch (error) {
+    log("error", "Failed to prune stale guild channels", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
  * Connects to Discord's Gateway and keeps a persistent client alive so the bot can
  * detect which servers it's a member of. Registers a channel to post alerts in for
  * each guild in Postgres — both for guilds already joined at startup (checked once
  * the client is ready, since discord.js populates those into cache directly without
  * emitting an event per guild) and for guilds joined afterward (via the guildCreate
- * event, which only fires for genuinely new joins). Returns the connected Client once
- * ready and initial guilds are registered, so the caller can safely look up channels
- * immediately after, and destroy the client on shutdown.
+ * event, which only fires for genuinely new joins). Also removes registrations for
+ * guilds the bot is removed from, via guildDelete and a startup prune. Returns the
+ * connected Client once ready and initial guilds are reconciled, so the caller can
+ * safely look up channels immediately after, and destroy the client on shutdown.
  */
 export async function startDiscordGateway(botToken: string, databaseUrl: string): Promise<Client> {
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -72,12 +94,25 @@ export async function startDiscordGateway(botToken: string, databaseUrl: string)
     void registerGuild(databaseUrl, guild);
   });
 
+  client.on(Events.GuildDelete, (guild) => {
+    void unregisterGuild(databaseUrl, guild.id).catch((error: unknown) =>
+      log("error", "Failed to unregister guild channel", {
+        guildId: guild.id,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  });
+
   const ready = new Promise<void>((resolve) => {
     client.once(Events.ClientReady, (readyClient) => {
       log("info", "Discord gateway connected", { user: readyClient.user.tag });
-      Promise.all([...readyClient.guilds.cache.values()].map((guild) => registerGuild(databaseUrl, guild)))
+      const guilds = [...readyClient.guilds.cache.values()];
+      Promise.all([
+        ...guilds.map((guild) => registerGuild(databaseUrl, guild)),
+        pruneStaleGuilds(databaseUrl, new Set(guilds.map((guild) => guild.id))),
+      ])
         .catch((error: unknown) =>
-          log("error", "Failed to register existing guild channels", { error: String(error) }),
+          log("error", "Failed to reconcile guild channels", { error: String(error) }),
         )
         .finally(resolve);
     });
