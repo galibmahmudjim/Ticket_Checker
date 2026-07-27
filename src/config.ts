@@ -1,8 +1,8 @@
 import "dotenv/config";
 
-const MOVIE_ID = 1687;
-const MOVIE_NAME = "Billie Eilish: Hit Me Hard and Soft - The Tour Live in 3D";
-const SHOW_DATE = "2026-07-28";
+const MOVIE_ID = 1688;
+const MOVIE_NAME = "Spider-Man: Brand New Day";
+const SHOW_DATE = "2026-07-31";
 const LOCATION = 2;
 
 export interface EndpointConfig {
