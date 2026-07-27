@@ -7,7 +7,6 @@ const LOCATION = 2;
 
 export interface EndpointConfig {
   readonly pollSecret: string;
-  readonly lockTtlMs: number;
 }
 
 export interface AppConfig {
@@ -22,6 +21,7 @@ export interface AppConfig {
   readonly authHeaderName: string;
   readonly discordBotToken: string;
   readonly pollIntervalMs: number;
+  readonly lockTtlMs: number;
   readonly databaseUrl: string;
 }
 
@@ -52,20 +52,19 @@ export function loadConfig(): AppConfig {
     authHeaderName: process.env.CINEPLEX_AUTH_HEADER_NAME ?? "Authorization",
     discordBotToken: requireEnv("DISCORD_BOT_TOKEN"),
     pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? "60000"),
+    lockTtlMs: Number(process.env.POLL_LOCK_TTL_MS ?? "60000"),
     databaseUrl: requireEnv("DATABASE_URL"),
   };
 }
 
 /**
- * Reads the settings that govern the HTTP poll endpoint: the shared secret callers
- * must present, and how long the poll lock stays valid so a crashed invocation can't
- * block the next trigger indefinitely. Returns a typed EndpointConfig. Throws if
- * POLL_SECRET is missing. Only used by `api/poll.ts`; the long-running entry point in
- * `src/index.ts` needs none of it.
+ * Reads the shared secret callers of the HTTP poll endpoint must present. Returns a
+ * typed EndpointConfig. Throws if POLL_SECRET is missing. Only used by `api/poll.ts`;
+ * the long-running entry point in `src/index.ts` needs none of it — the poll lock's
+ * TTL lives on AppConfig instead, since both entry points take the lock.
  */
 export function loadEndpointConfig(): EndpointConfig {
   return {
     pollSecret: requireEnv("POLL_SECRET"),
-    lockTtlMs: Number(process.env.POLL_LOCK_TTL_MS ?? "60000"),
   };
 }

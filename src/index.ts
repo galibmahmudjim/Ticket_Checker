@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { loadConfig } from "./config.js";
+import { acquirePollLock, releasePollLock, setNextPollAt } from "./pollLock.js";
 import { loadState, saveState, type PollState } from "./stateStore.js";
 import { closePool } from "./db.js";
 import { runPollCycle } from "./pollCycle.js";
@@ -13,9 +15,16 @@ import { log } from "./logger.js";
  * posts a one-time "bot started" message to the registered channels, then loops
  * forever on POLL_INTERVAL_MS calling runPollCycle and persisting state after every
  * cycle. On Vercel this file is not used at all — `api/poll.ts` drives the same
- * runPollCycle through the self-chaining segment runner instead, because a serverless
- * function cannot host a loop like this one. Returns when the process receives
- * SIGINT/SIGTERM.
+ * runPollCycle one poll per request instead, because a serverless function cannot host
+ * a loop like this one.
+ *
+ * Each cycle takes the same `poll_lock` the HTTP endpoint uses and writes
+ * `next_poll_at` after polling, so the database reflects this loop's schedule rather
+ * than only the endpoint's, and so the two coordinate instead of polling over each
+ * other if both ever run against one database. A cycle that cannot take the lock is
+ * skipped rather than queued — another poller has just done the work.
+ *
+ * Returns when the process receives SIGINT/SIGTERM.
  */
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -71,9 +80,23 @@ async function main(): Promise<void> {
   process.on("SIGTERM", shutdown);
 
   while (!isShuttingDown) {
-    await syncGuilds(config.discordBotToken, config.databaseUrl);
-    state = await runPollCycle(config, state);
-    await saveState(config.databaseUrl, state);
+    const holderId = randomUUID();
+    if (await acquirePollLock(config.databaseUrl, holderId, config.lockTtlMs)) {
+      try {
+        await syncGuilds(config.discordBotToken, config.databaseUrl);
+        state = await runPollCycle(config, state);
+        await saveState(config.databaseUrl, state);
+        await setNextPollAt(
+          config.databaseUrl,
+          holderId,
+          new Date(Date.now() + config.pollIntervalMs),
+        );
+      } finally {
+        await releasePollLock(config.databaseUrl, holderId);
+      }
+    } else {
+      log("warn", "Another poller holds the lock; skipping this cycle", { holderId });
+    }
     if (!isShuttingDown) {
       await sleep(config.pollIntervalMs);
     }

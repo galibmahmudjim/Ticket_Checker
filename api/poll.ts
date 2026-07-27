@@ -57,7 +57,7 @@ export default async function handler(
   }
 
   const holderId = randomUUID();
-  const locked = await acquirePollLock(config.databaseUrl, holderId, endpointConfig.lockTtlMs);
+  const locked = await acquirePollLock(config.databaseUrl, holderId, config.lockTtlMs);
 
   if (!locked) {
     response.status(200).json({ status: "busy" });

@@ -58,7 +58,8 @@ date/location you configure in advance.
     it. See "Deployment: Vercel" below.
   - `src/index.ts` — used by `npm run dev` / `npm start` locally, and by any always-on
     host. Loops forever on `POLL_INTERVAL_MS` via `setTimeout`, pacing itself in
-    process. Not used on Vercel at all.
+    process. Not used on Vercel at all. Its `setTimeout` is the real schedule; the
+    `next_poll_at` it writes is a record of that schedule, not the thing driving it.
 - `api/status.ts` answers "is it still checking?". `runPollCycle` stamps
   `last_polled_at` / `last_poll_status` / `last_session_count` onto `poll_state` on
   every attempt — success or failure — so the record survives the process and both
@@ -168,8 +169,11 @@ showtime added to the watched date) is what triggers an alert.
   seen-session fingerprints live here, per channel, rather than globally — see "How
   it works" above for why.
 - `src/pollLock.ts` — a single-row `poll_lock` table (`holder_id`, `expires_at`,
-  `next_poll_at`) that is both the mutex and the clock for the Vercel HTTP endpoint.
-  Unused by `src/index.ts`.
+  `next_poll_at`) that is both the mutex and the clock. **Both** entry points take the
+  lock and write `next_poll_at` after polling, so the row reflects reality whichever
+  one is running, and the two coordinate rather than polling over each other if both
+  ever run against one database. A cycle that cannot take the lock is skipped, not
+  queued.
 
 All tables are created automatically on first connect via `CREATE TABLE IF NOT
 EXISTS` — no manual migration step. `index.ts` closes the shared pool explicitly on
