@@ -104,11 +104,12 @@ and a date, no time-of-day field. `formatShowEntry()` in `discordNotifier.ts` pi
 whole entry regardless of schema, so it isn't affected either way.
 
 `get-shows` (called per new entry with that entry's `{location, movieId, showDate}`)
-returns the actual sessions on sale for that date — its exact response shape isn't
-confirmed yet (no real showtime has gone on sale for the watched movie so far), so
-`formatShowSessions()` reads it the same schema-agnostically-guessing way
-`formatShowEntry()` does. Check the first real `get-shows` response to confirm session
-lines display sensibly, and adjust the field-name guesses if needed.
+returns the actual sessions on sale for that date — confirmed shape is a list of
+screenings, each `{..., "screenTitle":"Hall 1", "showTimes":[{"showTime":"11:20:00",
+"seatPrices":[{"seatTypeTitle":"Regular","unitPrice":400}, ...]}, ...]}`.
+`formatShowSessions()` in `discordNotifier.ts` turns each showtime into a line like
+`Hall 1 11:20:00 (Regular ৳400, Premium ৳450)`, falling back to raw JSON for a
+screening that doesn't match this shape.
 
 ## Running
 

@@ -33,27 +33,61 @@ export function formatShowEntry(entry: unknown): string {
 }
 
 /**
- * Builds human-readable one-line descriptions of each session in a get-shows response
- * (e.g. individual showtimes/halls on sale for one showdate). Returns "time | hall"
- * per session when those fields can be guessed from common field names, otherwise
- * each session's raw JSON. Returns an empty array if `sessions` isn't a list.
+ * Formats one seatPrices entry (e.g. {seatTypeTitle: "Regular", unitPrice: 400}) as
+ * "Regular ৳400". Returns undefined if the entry isn't shaped as expected.
+ */
+function formatSeatPrice(price: unknown): string | undefined {
+  if (typeof price !== "object" || price === null) {
+    return undefined;
+  }
+  const record = price as Record<string, unknown>;
+  if (typeof record.seatTypeTitle !== "string" || typeof record.unitPrice !== "number") {
+    return undefined;
+  }
+  return `${record.seatTypeTitle} ৳${record.unitPrice}`;
+}
+
+/**
+ * Builds human-readable one-line descriptions of each show session in a get-shows
+ * response — confirmed shape is a list of screenings, each with `screenTitle` and a
+ * `showTimes` list of {showTime, seatPrices}. Returns "Hall N 11:20 (Regular ৳400,
+ * Premium ৳450)" per showtime; falls back to the raw JSON for a screening that
+ * doesn't match this shape. Returns an empty array if `sessions` isn't a list.
  */
 export function formatShowSessions(sessions: unknown): readonly string[] {
   if (!Array.isArray(sessions)) {
     return [];
   }
 
-  return sessions.map((session) => {
-    if (typeof session !== "object" || session === null) {
-      return String(session);
+  const lines: string[] = [];
+  for (const screening of sessions) {
+    if (typeof screening !== "object" || screening === null) {
+      lines.push(String(screening));
+      continue;
     }
-    const record = session as Record<string, unknown>;
-    const parts = [
-      firstDefined(record, COMMON_TIME_KEYS),
-      firstDefined(record, COMMON_HALL_KEYS),
-    ].filter((part) => part !== undefined);
-    return parts.length > 0 ? parts.map(String).join(" | ") : JSON.stringify(record);
-  });
+    const record = screening as Record<string, unknown>;
+    const hall = record.screenTitle;
+    const showTimes = record.showTimes;
+
+    if (typeof hall !== "string" || !Array.isArray(showTimes) || showTimes.length === 0) {
+      lines.push(JSON.stringify(record));
+      continue;
+    }
+
+    for (const showTime of showTimes) {
+      if (typeof showTime !== "object" || showTime === null) {
+        continue;
+      }
+      const showTimeRecord = showTime as Record<string, unknown>;
+      const time = showTimeRecord.showTime;
+      const seatPrices = Array.isArray(showTimeRecord.seatPrices) ? showTimeRecord.seatPrices : [];
+      const priceText = seatPrices.map(formatSeatPrice).filter((part) => part !== undefined).join(", ");
+
+      lines.push(priceText ? `${hall} ${time} (${priceText})` : `${hall} ${String(time)}`);
+    }
+  }
+
+  return lines;
 }
 
 const DISCORD_API_BASE_URL = "https://discord.com/api/v10";
