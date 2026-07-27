@@ -86,16 +86,15 @@ Like the ticket auth, this token is refreshed manually (repeat the DevTools step
 whenever it expires — there's no automated refresh script for it, since it's only ever
 needed once per movie switch, not on a recurring poll.
 
-## Response schema: confirmed connectivity, entry shape still unseen
+## Response schema: confirmed
 
 With a real token, `get-showdate` returns `{"status":"success","code":200,"data":[],"message":["Request Success"]}`
-for movie 1688 — confirmed working, but `data` has been empty every time so far (no
-showtimes on sale yet), so the shape of an individual entry once one exists is still
-unknown. The diff/format logic in `showtimeDiff.ts` and `discordNotifier.ts` is
-written schema-agnostically (fingerprints the whole entry, best-effort extracts
-`date`/`time`/`hall`-ish fields) so it should work regardless — but check the first
-real alert to confirm entries display sensibly, and adjust the field-name guesses in
-`formatShowEntry()` if needed.
+for movie 1688 — `data` is empty since it's still "Coming Soon" (no showtimes on sale
+yet). For a movie that's currently showing (e.g. 1705), a `data` entry looks like
+`{"location":1,"movieId":1705,"showDate":"2026-07-28"}` — just a numeric location id
+and a date, no time-of-day field. `formatShowEntry()` in `discordNotifier.ts` picks up
+`showDate` and formats `location` as `Location N`; `showtimeDiff.ts` fingerprints the
+whole entry regardless of schema, so it isn't affected either way.
 
 ## Running
 
