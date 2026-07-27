@@ -5,7 +5,6 @@ import { formatShowSessions, sendDiscordMessage } from "./discordNotifier.js";
 import {
   getChannelIds,
   getChannelStates,
-  getChannelState,
   saveChannelState,
   type ChannelState,
 } from "./channelStore.js";
@@ -49,30 +48,6 @@ async function deliverToChannel(
     fingerprints: allFingerprints,
     hasPolledBefore: true,
   });
-}
-
-/**
- * Delivers the current showtimes to a single freshly registered channel, right when
- * its server adds the bot — without this, a new server would stay silent until the
- * next POLL_INTERVAL_MS tick (up to 10 minutes), which reads as the bot not working.
- * Fetches sessions on its own since it runs outside the poll loop. Returns nothing;
- * never throws — failures are logged, and the regular poll loop will retry.
- */
-export async function deliverToNewChannel(config: AppConfig, channelId: string): Promise<void> {
-  try {
-    const channel = await getChannelState(config.databaseUrl, channelId);
-    if (!channel) {
-      log("warn", "Channel vanished before its welcome delivery", { channelId });
-      return;
-    }
-    const sessions = await fetchShows(config);
-    await deliverToChannel(config, sessions, channel);
-  } catch (error) {
-    log("error", "Failed to deliver to newly added channel; poll loop will retry", {
-      channelId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
 }
 
 /**

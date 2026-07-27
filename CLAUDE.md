@@ -23,19 +23,25 @@ date/location you configure in advance.
   history and silently miss everything currently on sale. A channel's first poll posts
   whatever is on sale as a "now watching" catch-up; subsequent polls post only genuine
   changes.
-- `src/discordGateway.ts` connects to Discord's Gateway (`GatewayIntentBits.Guilds`
-  only — not a privileged intent, no portal toggle needed) purely to detect which
-  servers the bot is a member of, and pick a channel to post alerts in for each one:
-  the server's system channel if the bot can post there, otherwise the first text
-  channel it has Send Messages permission in. This runs both for already-joined
-  servers (checked once at startup) and newly-joined ones (via the `guildCreate`
-  event). The chosen channel is registered via `src/channelStore.ts`, in a
-  `discord_channels` table in Postgres (auto-created, same as `poll_state`). No
-  manual channel configuration: adding the bot to a server with permission to post
-  somewhere is what makes that server start receiving alerts. Removal is handled too
-  — `guildDelete` (bot kicked while running) and a startup prune (kicked while the
-  process was down) delete the registration, so polls don't keep failing with
-  "Unknown Channel" against a server the bot can no longer reach.
+- `src/guildSync.ts` detects which servers the bot is a member of and picks a channel
+  to post alerts in for each one. It uses **Discord's REST API only** — no Gateway, no
+  WebSocket, no `discord.js` dependency — because the bot runs on Vercel, where nothing
+  stays alive between invocations to hold a socket open (see "Deployment: Vercel"
+  below). `syncGuilds()` runs before every poll and reconciles in both directions:
+  `GET /users/@me/guilds` is the authoritative membership list, so servers missing from
+  the database get a channel registered, and registered servers missing from the list
+  get pruned. Polling the list this way replaces the Gateway's `guildCreate` /
+  `guildDelete` events, which can't be received without a persistent connection; the
+  cost is that a join or kick is noticed on the next poll rather than instantly.
+  Channel choice is the server's system channel if the bot can post there, otherwise
+  the lowest-positioned text channel it can. `src/permissions.ts` computes that
+  from raw REST data — union of `@everyone` and the bot's role permissions,
+  short-circuited by Administrator, then `@everyone`, role, and member channel
+  overwrites in Discord's documented order — reimplementing what discord.js's
+  `permissionsFor` used to do. The chosen channel is registered via
+  `src/channelStore.ts` in a `discord_channels` table in Postgres (auto-created, same
+  as `poll_state`). No manual channel configuration: adding the bot to a server with
+  permission to post somewhere is what makes that server start receiving alerts.
 - `src/discordNotifier.ts` posts the same message directly into every registered
   channel via the bot's REST API (`DISCORD_BOT_TOKEN`), independently — one channel's
   failure (e.g. permissions revoked there) doesn't block posting to the others. Also
@@ -43,13 +49,15 @@ date/location you configure in advance.
   (tracked via `state.authAlertSent`), not repeated on every poll, and reset once a
   poll succeeds again so a future failure alerts again.
 - `src/pollCycle.ts` holds the "do one poll" logic (fetch → diff → look up current
-  channels → alert → return updated state).
-- `src/index.ts` is the only entry point: loads config, connects the Discord Gateway,
-  posts a one-time "bot started" message to whichever channels are already
-  registered, then loops forever on `POLL_INTERVAL_MS` calling `runPollCycle`,
-  persisting state after every cycle. No cron/scheduler involved — the process itself
-  stays running, keeps the Gateway connection open, and paces its own polling via
-  `setTimeout`.
+  channels → alert → return updated state). It is deliberately a one-shot function
+  with no timing of its own, so the same code drives both entry points below.
+- There are **two entry points**, one per hosting model, both calling the same
+  `syncGuilds` → `runPollCycle` → `saveState` sequence:
+  - `api/poll.ts` — used on Vercel. One HTTP request runs a *segment* of the loop, then
+    calls itself to spawn the next. See "Deployment: Vercel" below.
+  - `src/index.ts` — used by `npm run dev` / `npm start` locally, and by any always-on
+    host. Loops forever on `POLL_INTERVAL_MS` via `setTimeout`, pacing itself in
+    process. Not used on Vercel at all.
 
 ## Discord alert setup
 
@@ -62,14 +70,16 @@ servers it's in and post there automatically:
    check **View Channel** and **Send Messages** (this is required now — the bot
    posts in a channel, unlike an earlier DM-only version of this bot that needed no
    permissions at all) → open the generated URL and add the bot to a server. A
-   channel there is automatically registered the next time the bot process starts
-   (or immediately, if it's already running) — see "How it works" above.
+   channel there is automatically registered on the next poll — within
+   `POLL_INTERVAL_MS`, since `syncGuilds()` runs before every poll (see "How it works"
+   above).
 3. If the bot was added to a server *before* this permission existed, redo step 2's
    authorize flow for that server (same URL, same server) — Discord updates the
    bot's granted permissions in-place, it doesn't require kicking and re-adding it.
 
-The bot never sends or reacts to messages, and doesn't need any message-content
-intents — it only watches for guild membership changes and posts alerts directly.
+The bot never sends or reacts to messages, needs no message-content intent, and needs
+**no Gateway intents at all** — it only reads its guild list over REST and posts alerts
+directly.
 
 ## Auth token: manual refresh only, by design
 
@@ -141,7 +151,7 @@ showtime added to the watched date) is what triggers an alert.
 
 ## State persistence: Postgres
 
-`src/db.ts` holds one shared connection pool (`DATABASE_URL`), used by both:
+`src/db.ts` holds one shared connection pool (`DATABASE_URL`), used by all three:
 
 - `src/stateStore.ts` — global state in a single-row `poll_state` table; currently
   just the one-time auth-alert flag.
@@ -149,22 +159,79 @@ showtime added to the watched date) is what triggers an alert.
   (`guild_id`, `channel_id`, `fingerprints`, `has_polled_before`, `added_at`). The
   seen-session fingerprints live here, per channel, rather than globally — see "How
   it works" above for why.
+- `src/chainLease.ts` — a single-row `poll_chain` table (`runner_id`,
+  `lease_expires_at`, `next_poll_at`) that is both the lock and the clock for the
+  Vercel self-chaining loop. Unused by `src/index.ts`.
 
-Both tables are created automatically on first connect via `CREATE TABLE IF NOT
+All tables are created automatically on first connect via `CREATE TABLE IF NOT
 EXISTS` — no manual migration step. `index.ts` closes the shared pool explicitly on
-shutdown (SIGINT/SIGTERM).
+shutdown (SIGINT/SIGTERM); on Vercel the pool is left open on purpose so warm
+instances reuse it, capped at 2 connections per instance since instances multiply.
+**`DATABASE_URL` must point at a pooled endpoint on Vercel** (Neon's pooler host,
+Supabase's pgbouncer port) — direct connections will exhaust the database's limit as
+instances scale.
 
 ## Running
 
 - Local dev: `npm install && npm run dev`
 - Local prod: `npm run build && npm start`
+- Typecheck everything including `api/`: `npm run typecheck` (the default `npm run
+  build` compiles `src/` only — Vercel builds `api/` with its own toolchain)
 - Refresh the auth token: `npm run refresh-token` (see above — needs
   `npx playwright install chromium` once first)
 
-There's no scheduler, cron job, or container involved by design — `npm start` (or
-`npm run dev`) runs the whole thing: it stays running and paces its own polling via
-`POLL_INTERVAL_MS`. Keep the process alive on whatever machine you choose to run it
-on for as long as you want it watching.
+Locally there's no scheduler or cron involved — `npm start` (or `npm run dev`) runs
+the whole thing: it stays running and paces its own polling via `POLL_INTERVAL_MS`.
+
+## Deployment: Vercel (self-chaining loop)
+
+Vercel has no long-running processes: every function is request-scoped and killed at
+`maxDuration`. Rather than a cron job, this deployment keeps polling alive by having
+each invocation **spawn its successor** before it exits, so the loop is a chain of
+HTTP requests instead of one process.
+
+`api/poll.ts` handles one link in that chain:
+
+1. Authenticates the request against `CHAIN_SECRET` (constant-time compare).
+2. Claims the `poll_chain` lease in a single atomic `INSERT … ON CONFLICT DO UPDATE
+   … WHERE lease_expires_at < now()`. Exactly one of any number of concurrent requests
+   wins; the losers return `200 {"status":"already-running"}` and do nothing. This is
+   what stops a duplicate chain from forming and double-posting every alert.
+3. Responds `202` immediately, then keeps working via `waitUntil` from
+   `@vercel/functions`.
+4. `src/chainRunner.ts` polls until `CHAIN_SEGMENT_BUDGET_MS` is nearly spent, renewing
+   the lease each iteration and bailing out if it's ever lost. Cadence comes from the
+   persisted `next_poll_at`, not a fixed sleep, so the real interval stays at
+   `POLL_INTERVAL_MS` across segment boundaries instead of resetting on every handoff.
+5. Releases the lease, **then** POSTs to `/api/poll` to start the next segment. The
+   order matters: if the lease were still held, the successor would see the chain as
+   running, exit, and the chain would die.
+
+Setup:
+
+1. Import the repo on Vercel. No build settings needed — `vercel.json` sets
+   `maxDuration: 60` for `api/poll.ts`.
+2. Set every variable from `.env.example` in the Vercel project, including
+   `CHAIN_SECRET` and a **pooled** `DATABASE_URL`.
+3. Start the chain once by hand — nothing starts it automatically:
+   `curl -X POST -H "Authorization: Bearer $CHAIN_SECRET" https://<app>.vercel.app/api/poll`
+
+### Known limits of this approach
+
+These are inherent to running a loop on serverless, not bugs:
+
+- **A broken chain stays broken.** If a segment is killed mid-flight (deploy, platform
+  error, timeout overrun), nothing restarts it. The endpoint is idempotent, so any
+  request to `/api/poll` revives it — hit it manually, or point a free external uptime
+  pinger at it as a watchdog. Look for `CHAIN BROKEN` in the function logs.
+- **Compute burns continuously.** The function is billed while sleeping between polls,
+  24/7 — unlike cron, which bills only per tick. Raising `POLL_INTERVAL_MS` does not
+  reduce cost here; it just idles more.
+- **A deploy orphans the running chain.** The in-flight segment finishes against the
+  old code and hands off to whatever `PUBLIC_BASE_URL` resolves to. Restart the chain
+  manually after deploying if you want the new code polling immediately.
+- **Join/kick detection is delayed** by up to one poll interval, since it's REST
+  polling rather than Gateway events.
 
 ## Environment variables
 

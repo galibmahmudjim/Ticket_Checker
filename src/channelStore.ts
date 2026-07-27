@@ -115,29 +115,6 @@ export async function getChannelStates(databaseUrl: string): Promise<readonly Ch
 }
 
 /**
- * Returns one channel's tracking state by channel id, or undefined if it isn't
- * registered (e.g. the bot was removed from that server in between).
- */
-export async function getChannelState(
-  databaseUrl: string,
-  channelId: string,
-): Promise<ChannelState | undefined> {
-  const db = await ensureTable(databaseUrl);
-  const result = await db.query<ChannelRow>(
-    "SELECT channel_id, fingerprints, has_polled_before FROM discord_channels WHERE channel_id = $1",
-    [channelId],
-  );
-  const row = result.rows[0];
-  return row
-    ? {
-        channelId: row.channel_id,
-        fingerprints: new Set(row.fingerprints),
-        hasPolledBefore: row.has_polled_before,
-      }
-    : undefined;
-}
-
-/**
  * Upserts one channel's fingerprint/baseline tracking state after a poll. Returns
  * nothing; this becomes the new baseline for that channel's next poll.
  */

@@ -1,9 +1,16 @@
 import "dotenv/config";
 
 const MOVIE_ID = 1687;
-const MOVIE_NAME = "Spider-Man: Brand New Day";
+const MOVIE_NAME = "Billie Eilish: Hit Me Hard and Soft - The Tour Live in 3D";
 const SHOW_DATE = "2026-07-28";
 const LOCATION = 2;
+
+export interface ChainConfig {
+  readonly chainSecret: string;
+  readonly selfBaseUrl: string;
+  readonly segmentBudgetMs: number;
+  readonly leaseTtlMs: number;
+}
 
 export interface AppConfig {
   readonly movieId: number;
@@ -48,5 +55,32 @@ export function loadConfig(): AppConfig {
     discordBotToken: requireEnv("DISCORD_BOT_TOKEN"),
     pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? "60000"),
     databaseUrl: requireEnv("DATABASE_URL"),
+  };
+}
+
+/**
+ * Reads the settings that govern the self-chaining poll loop on Vercel: the shared
+ * secret guarding the endpoint, the base URL each segment calls to spawn its
+ * successor, how long one segment runs before handing off, and how long its lease
+ * stays valid without renewal. `selfBaseUrl` falls back to Vercel's own deployment
+ * URL variables, preferring the stable production domain so a chain doesn't pin
+ * itself to a superseded deployment. Returns a typed ChainConfig. Throws if
+ * CHAIN_SECRET is missing or if no base URL can be determined.
+ */
+export function loadChainConfig(): ChainConfig {
+  const explicitBaseUrl = process.env.PUBLIC_BASE_URL;
+  const vercelBaseUrl =
+    process.env.VERCEL_PROJECT_PRODUCTION_URL ?? process.env.VERCEL_URL;
+  const selfBaseUrl = explicitBaseUrl ?? (vercelBaseUrl ? `https://${vercelBaseUrl}` : undefined);
+
+  if (!selfBaseUrl) {
+    throw new Error("Cannot determine self URL: set PUBLIC_BASE_URL");
+  }
+
+  return {
+    chainSecret: requireEnv("CHAIN_SECRET"),
+    selfBaseUrl: selfBaseUrl.replace(/\/$/, ""),
+    segmentBudgetMs: Number(process.env.CHAIN_SEGMENT_BUDGET_MS ?? "45000"),
+    leaseTtlMs: Number(process.env.CHAIN_LEASE_TTL_MS ?? "90000"),
   };
 }
