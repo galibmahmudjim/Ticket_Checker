@@ -53,8 +53,9 @@ date/location you configure in advance.
   with no timing of its own, so the same code drives both entry points below.
 - There are **two entry points**, one per hosting model, both calling the same
   `syncGuilds` → `runPollCycle` → `saveState` sequence:
-  - `api/poll.ts` — used on Vercel. One HTTP request runs a *segment* of the loop, then
-    calls itself to spawn the next. See "Deployment: Vercel" below.
+  - `api/poll.ts` — used on Vercel. One HTTP request runs at most one poll, then
+    returns. It has no timing of its own: an external scheduler decides when to call
+    it. See "Deployment: Vercel" below.
   - `src/index.ts` — used by `npm run dev` / `npm start` locally, and by any always-on
     host. Loops forever on `POLL_INTERVAL_MS` via `setTimeout`, pacing itself in
     process. Not used on Vercel at all.
@@ -159,9 +160,9 @@ showtime added to the watched date) is what triggers an alert.
   (`guild_id`, `channel_id`, `fingerprints`, `has_polled_before`, `added_at`). The
   seen-session fingerprints live here, per channel, rather than globally — see "How
   it works" above for why.
-- `src/chainLease.ts` — a single-row `poll_chain` table (`runner_id`,
-  `lease_expires_at`, `next_poll_at`) that is both the lock and the clock for the
-  Vercel self-chaining loop. Unused by `src/index.ts`.
+- `src/pollLock.ts` — a single-row `poll_lock` table (`holder_id`, `expires_at`,
+  `next_poll_at`) that is both the mutex and the clock for the Vercel HTTP endpoint.
+  Unused by `src/index.ts`.
 
 All tables are created automatically on first connect via `CREATE TABLE IF NOT
 EXISTS` — no manual migration step. `index.ts` closes the shared pool explicitly on
@@ -183,55 +184,63 @@ instances scale.
 Locally there's no scheduler or cron involved — `npm start` (or `npm run dev`) runs
 the whole thing: it stays running and paces its own polling via `POLL_INTERVAL_MS`.
 
-## Deployment: Vercel (self-chaining loop)
+## Deployment: Vercel
 
 Vercel has no long-running processes: every function is request-scoped and killed at
-`maxDuration`. Rather than a cron job, this deployment keeps polling alive by having
-each invocation **spawn its successor** before it exits, so the loop is a chain of
-HTTP requests instead of one process.
+`maxDuration`. So `api/poll.ts` does not loop — **one request runs at most one poll**,
+and an external scheduler decides when to call it.
 
-`api/poll.ts` handles one link in that chain:
+An earlier version of this deployment tried to keep the loop alive by having each
+invocation call itself before exiting. **That does not work on Vercel**, and the
+failure is worth recording so nobody tries it again: after about five self-referential
+hops Vercel rejects the request with `508 INFINITE_LOOP_DETECTED` (the `x-vercel-id`
+trace shows the chain depth, e.g. `bom1:iad1:iad1:iad1:iad1:iad1`). It is deliberate
+anti-recursion protection, not a timeout or a transient error, and no budget or timing
+change avoids it. A trigger has to originate outside the deployment.
 
-1. Authenticates the request against `CHAIN_SECRET` (constant-time compare).
-2. Claims the `poll_chain` lease in a single atomic `INSERT … ON CONFLICT DO UPDATE
-   … WHERE lease_expires_at < now()`. Exactly one of any number of concurrent requests
-   wins; the losers return `200 {"status":"already-running"}` and do nothing. This is
-   what stops a duplicate chain from forming and double-posting every alert.
-3. Responds `202` immediately, then keeps working via `waitUntil` from
-   `@vercel/functions`.
-4. `src/chainRunner.ts` polls until `CHAIN_SEGMENT_BUDGET_MS` is nearly spent, renewing
-   the lease each iteration and bailing out if it's ever lost. Cadence comes from the
-   persisted `next_poll_at`, not a fixed sleep, so the real interval stays at
-   `POLL_INTERVAL_MS` across segment boundaries instead of resetting on every handoff.
-5. Releases the lease, **then** POSTs to `/api/poll` to start the next segment. The
-   order matters: if the lease were still held, the successor would see the chain as
-   running, exit, and the chain would die.
+What `api/poll.ts` does per request:
 
-Setup:
+1. Authenticates against `POLL_SECRET` (constant-time compare). Unauthenticated
+   callers get `401`.
+2. Takes the `poll_lock` mutex in a single atomic `INSERT … ON CONFLICT DO UPDATE …
+   WHERE expires_at < now()`. If another invocation is mid-poll it returns
+   `{"status":"busy"}` rather than polling on top of it and double-posting.
+3. If `next_poll_at` is still in the future, returns `{"status":"not-due", dueInMs}`
+   without calling Cineplex at all. **This makes the endpoint safe to trigger at any
+   frequency** — the effective cadence stays `POLL_INTERVAL_MS` even if the scheduler
+   fires more often, so the two don't have to match exactly.
+4. Otherwise syncs guilds, polls, alerts, persists state, sets the next due time, and
+   returns `{"status":"polled"}`. Always releases the lock.
 
-1. Import the repo on Vercel. No build settings needed — `vercel.json` sets
-   `maxDuration: 60` for `api/poll.ts`.
-2. Set every variable from `.env.example` in the Vercel project, including
-   `CHAIN_SECRET` and a **pooled** `DATABASE_URL`.
-3. Start the chain once by hand — nothing starts it automatically:
-   `curl -X POST -H "Authorization: Bearer $CHAIN_SECRET" https://<app>.vercel.app/api/poll`
+### Setup
 
-### Known limits of this approach
+1. Import the repo on Vercel. `vercel.json` sets the build command, the output
+   directory (`public/`, a placeholder page — the project has no real frontend, and
+   Vercel fails the deploy without one) and `maxDuration: 30`.
+2. Set every variable from `.env.example` in the project, including `POLL_SECRET` and
+   a **pooled** `DATABASE_URL`.
+3. Point a scheduler at the endpoint. Nothing polls until you do:
 
-These are inherent to running a loop on serverless, not bugs:
+   ```
+   curl -X POST -H "Authorization: Bearer $POLL_SECRET" https://<app>.vercel.app/api/poll
+   ```
 
-- **A broken chain stays broken.** If a segment is killed mid-flight (deploy, platform
-  error, timeout overrun), nothing restarts it. The endpoint is idempotent, so any
-  request to `/api/poll` revives it — hit it manually, or point a free external uptime
-  pinger at it as a watchdog. Look for `CHAIN BROKEN` in the function logs.
-- **Compute burns continuously.** The function is billed while sleeping between polls,
-  24/7 — unlike cron, which bills only per tick. Raising `POLL_INTERVAL_MS` does not
-  reduce cost here; it just idles more.
-- **A deploy orphans the running chain.** The in-flight segment finishes against the
-  old code and hands off to whatever `PUBLIC_BASE_URL` resolves to. Restart the chain
-  manually after deploying if you want the new code polling immediately.
-- **Join/kick detection is delayed** by up to one poll interval, since it's REST
-  polling rather than Gateway events.
+   Options, in rough order of fit: a free external pinger (cron-job.org, UptimeRobot)
+   set to roughly `POLL_INTERVAL_MS`; Vercel Cron via a `crons` entry in `vercel.json`
+   — but Hobby only fires **once per day**, so that needs Pro to be useful here; or a
+   real cron entry on any machine you already keep running.
+
+### Trade-offs of this design
+
+- **Nothing polls unless something triggers it.** There is no self-starting behaviour,
+  by design. If the scheduler stops, the bot silently stops watching.
+- **Cadence granularity is the scheduler's**, not `POLL_INTERVAL_MS`'s.
+  `POLL_INTERVAL_MS` can only slow polling down relative to the trigger, never speed it
+  up.
+- **Join/kick detection is delayed** by up to one poll interval, since guild sync is
+  REST polling rather than Gateway events.
+- If you would rather not depend on an external trigger at all, `src/index.ts` still
+  runs the whole thing as one always-on process on any host that allows it.
 
 ## Environment variables
 

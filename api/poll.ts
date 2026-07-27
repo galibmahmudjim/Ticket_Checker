@@ -1,9 +1,8 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { waitUntil } from "@vercel/functions";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { loadChainConfig, loadConfig } from "../src/config.js";
-import { claimChainLease } from "../src/chainLease.js";
-import { runChainSegment } from "../src/chainRunner.js";
+import { loadEndpointConfig, loadConfig } from "../src/config.js";
+import { acquirePollLock } from "../src/pollLock.js";
+import { runScheduledPoll } from "../src/scheduledPoll.js";
 import { log } from "../src/logger.js";
 
 /**
@@ -20,16 +19,15 @@ function isAuthorized(header: string | undefined, expectedSecret: string): boole
 }
 
 /**
- * Entry point for the self-chaining poll loop. Each request tries to become the single
- * active chain runner: it claims the database lease, responds immediately, and then
- * continues polling in the background via `waitUntil` until its time budget is spent,
- * at which point it calls this same endpoint again to spawn its successor.
+ * Runs one poll per request, so the bot's cadence comes from whatever external
+ * scheduler triggers this endpoint. It deliberately does not invoke itself to continue
+ * polling: Vercel blocks a deployment from calling itself past a few hops with a 508
+ * INFINITE_LOOP_DETECTED, which makes any self-chaining loop impossible here.
  *
- * Responds 202 when this request started a segment, 200 when a segment is already
- * running (so duplicate triggers are harmless no-ops rather than a second chain),
- * 401 on a bad secret, and 405 on an unsupported method. Because it is idempotent,
- * hitting this endpoint by hand — or from any external pinger — is also how a chain
- * that died mid-flight gets restarted.
+ * Responds 200 `polled` when a poll ran, 200 `not-due` when triggered before
+ * POLL_INTERVAL_MS has elapsed (so over-frequent triggers are harmless), 200 `busy`
+ * when another invocation holds the lock, 401 on a bad secret, and 405 on an
+ * unsupported method. Safe to call at any frequency and from anywhere.
  */
 export default async function handler(
   request: VercelRequest,
@@ -41,10 +39,10 @@ export default async function handler(
   }
 
   let config;
-  let chainConfig;
+  let endpointConfig;
   try {
     config = loadConfig();
-    chainConfig = loadChainConfig();
+    endpointConfig = loadEndpointConfig();
   } catch (error) {
     log("error", "Invalid configuration", {
       error: error instanceof Error ? error.message : String(error),
@@ -53,20 +51,19 @@ export default async function handler(
     return;
   }
 
-  if (!isAuthorized(request.headers.authorization, chainConfig.chainSecret)) {
+  if (!isAuthorized(request.headers.authorization, endpointConfig.pollSecret)) {
     response.status(401).json({ error: "Unauthorized" });
     return;
   }
 
-  const runnerId = randomUUID();
-  const claimed = await claimChainLease(config.databaseUrl, runnerId, chainConfig.leaseTtlMs);
+  const holderId = randomUUID();
+  const locked = await acquirePollLock(config.databaseUrl, holderId, endpointConfig.lockTtlMs);
 
-  if (!claimed) {
-    response.status(200).json({ status: "already-running" });
+  if (!locked) {
+    response.status(200).json({ status: "busy" });
     return;
   }
 
-  log("info", "Chain segment started", { runnerId, budgetMs: chainConfig.segmentBudgetMs });
-  waitUntil(runChainSegment(config, chainConfig, runnerId));
-  response.status(202).json({ status: "started", runnerId });
+  const outcome = await runScheduledPoll(config, holderId);
+  response.status(200).json(outcome);
 }
