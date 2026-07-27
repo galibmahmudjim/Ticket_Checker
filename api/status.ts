@@ -1,7 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { loadConfig } from "../src/config.js";
 import { loadState } from "../src/stateStore.js";
-import { getNextPollAt } from "../src/pollLock.js";
 import { getChannelIds } from "../src/channelStore.js";
 import { log } from "../src/logger.js";
 
@@ -17,6 +16,12 @@ const STALE_AFTER_INTERVALS = 3;
  * POLL_INTERVAL_MS, which is the signal to watch — most uptime pingers can be told to
  * alert when a response body stops matching an expected string, turning a stalled bot
  * into a notification rather than something discovered too late.
+ *
+ * `nextPollDueAt` is derived from the last poll plus POLL_INTERVAL_MS rather than read
+ * from `poll_lock.next_poll_at`, because only the Vercel path maintains that column —
+ * the in-process loop in `src/index.ts` keeps its schedule entirely in memory via
+ * `setTimeout` and persists no timer at all. Deriving it keeps this endpoint honest
+ * under both entry points instead of reporting a stale gate under one of them.
  *
  * Deliberately unauthenticated and read-only: it exposes only what is being watched
  * and when it was last checked — no tokens, channel ids, or server names. Responds 200
@@ -34,14 +39,17 @@ export default async function handler(
 
   try {
     const config = loadConfig();
-    const [state, nextPollAt, channelIds] = await Promise.all([
+    const [state, channelIds] = await Promise.all([
       loadState(config.databaseUrl),
-      getNextPollAt(config.databaseUrl),
       getChannelIds(config.databaseUrl),
     ]);
 
     const now = Date.now();
     const lastPolledAt = state.lastPolledAt;
+    const nextPollDueAt =
+      lastPolledAt === null
+        ? null
+        : new Date(lastPolledAt.getTime() + config.pollIntervalMs).toISOString();
     const minutesSinceLastPoll =
       lastPolledAt === null ? null : Math.round((now - lastPolledAt.getTime()) / 60_000);
     const healthy =
@@ -62,7 +70,7 @@ export default async function handler(
         status: state.lastPollStatus,
         sessionsOnSale: state.lastSessionCount,
       },
-      nextPollDueAt: nextPollAt.toISOString(),
+      nextPollDueAt,
       pollIntervalMinutes: Math.round(config.pollIntervalMs / 60_000),
       alertChannels: channelIds.length,
       authTokenExpired: state.authAlertSent,
