@@ -182,6 +182,39 @@ Postgres connection pool would otherwise keep the process alive; `index.ts` clos
 the pool explicitly on shutdown instead, since it needs the connection to stay open
 across its in-process loop.
 
+## Running on Vercel instead of GitHub Actions
+
+`api/poll.ts` is a Vercel serverless function equivalent to `runOnce.ts` — runs one
+poll cycle and returns an HTTP response instead of exiting a process, since Vercel
+Cron triggers a URL rather than a script. `vercel.json` schedules it via `crons`. This
+only works because state lives in Postgres now (see above) — Vercel functions have no
+persistent local disk between invocations, so the old file-based state store couldn't
+have survived here.
+
+Setup:
+
+1. Import this repo into Vercel (vercel.com → New Project → pick the GitHub repo).
+2. Project → **Settings → Environment Variables**, add the same values as `.env.example`
+   (`CINEPLEX_DEVICE_KEY`, `CINEPLEX_AUTH_TOKEN`, `CINEPLEX_AUTH_HEADER_NAME`,
+   `DISCORD_BOT_TOKEN`, `DISCORD_USER_ID`, `DATABASE_URL`), plus a `CRON_SECRET` you
+   make up (any random string) — Vercel automatically sends it as
+   `Authorization: Bearer <CRON_SECRET>` on cron-triggered requests, and `api/poll.ts`
+   rejects any request that doesn't carry it, so the endpoint can't be triggered by
+   anyone who finds the URL.
+3. Deploy. Vercel registers the cron schedule from `vercel.json` automatically.
+4. **Vercel Hobby's cron cap is once/day** — `*/5 * * * *` in `vercel.json` needs
+   Vercel Pro to actually run that often; Hobby will reject or silently downgrade it.
+5. When `CINEPLEX_AUTH_TOKEN` expires, you'll get the same Discord warning DM as
+   other modes — refresh it locally with `npm run refresh-token`, then update the
+   `CINEPLEX_AUTH_TOKEN` (and `CINEPLEX_DEVICE_KEY`, if it also changed) in Vercel's
+   environment variables and redeploy (or just wait for the next cron tick to pick up
+   the updated env var, if Vercel applies it without a redeploy).
+
+If you switch to Vercel, disable or delete `.github/workflows/poll-tickets.yml` —
+running both schedulers polls Cineplex twice as often for no benefit (Postgres-backed
+fingerprinting prevents duplicate alerts either way, but it's still pointless
+duplication).
+
 ## Environment variables
 
 See `.env.example` for the full list and defaults.
