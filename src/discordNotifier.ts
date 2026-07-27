@@ -81,42 +81,15 @@ export function formatShowSessions(sessions: unknown): readonly string[] {
 const DISCORD_API_BASE_URL = "https://discord.com/api/v10";
 
 /**
- * Opens (or fetches the existing) DM channel between the bot and the given Discord
- * user id. Returns the channel id to send messages to. Throws an Error including the
- * response status and body if Discord rejects the request (e.g. bad bot token, or the
- * bot and user don't share a server).
+ * Posts a plain-text message directly into one channel via the bot's REST API.
+ * Returns nothing on success; throws an Error including the response status and
+ * body on failure (e.g. the bot no longer has Send Messages permission there).
  */
-async function openDmChannel(botToken: string, userId: string): Promise<string> {
-  const response = await fetch(`${DISCORD_API_BASE_URL}/users/@me/channels`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bot ${botToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ recipient_id: userId }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Discord open-DM-channel failed (${response.status}): ${body}`);
-  }
-
-  const channel = (await response.json()) as { readonly id: string };
-  return channel.id;
-}
-
-/**
- * Sends a plain-text Discord DM to one user via the bot's REST API: opens the DM
- * channel, then posts the message into it. Returns nothing on success; throws an
- * Error including the response status and body on failure.
- */
-async function sendDiscordMessageToUser(
+async function sendMessageToChannel(
   botToken: string,
-  userId: string,
+  channelId: string,
   content: string,
 ): Promise<void> {
-  const channelId = await openDmChannel(botToken, userId);
-
   const response = await fetch(`${DISCORD_API_BASE_URL}/channels/${channelId}/messages`, {
     method: "POST",
     headers: {
@@ -128,34 +101,34 @@ async function sendDiscordMessageToUser(
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`Discord send-DM failed (${response.status}): ${body}`);
+    throw new Error(`Discord channel post failed (${response.status}): ${body}`);
   }
 }
 
 /**
- * Sends the same plain-text Discord DM to every configured user id, independently —
- * one recipient's failure (e.g. they haven't shared a server with the bot) doesn't
- * block delivery to the others. Returns nothing if at least one recipient received
- * it; throws an aggregate Error only if every recipient's send failed, so callers can
- * still treat "delivered to nobody" as a failure worth retrying.
+ * Posts the same plain-text message into every registered channel, independently —
+ * one channel's failure (e.g. the bot lost permission there) doesn't block posting
+ * to the others. Returns nothing if at least one channel received it; throws an
+ * aggregate Error only if every channel's send failed, so callers can still treat
+ * "delivered nowhere" as a failure worth retrying.
  */
 export async function sendDiscordMessage(
   botToken: string,
-  userIds: readonly string[],
+  channelIds: readonly string[],
   content: string,
 ): Promise<void> {
   const results = await Promise.allSettled(
-    userIds.map((userId) => sendDiscordMessageToUser(botToken, userId, content)),
+    channelIds.map((channelId) => sendMessageToChannel(botToken, channelId, content)),
   );
 
   const failures = results.filter(
     (result): result is PromiseRejectedResult => result.status === "rejected",
   );
   for (const failure of failures) {
-    log("error", "Failed to DM one recipient", { error: String(failure.reason) });
+    log("error", "Failed to post to one channel", { error: String(failure.reason) });
   }
 
   if (failures.length === results.length) {
-    throw new Error(`Discord send-DM failed for all ${results.length} recipient(s)`);
+    throw new Error(`Discord channel post failed for all ${results.length} channel(s)`);
   }
 }

@@ -3,16 +3,16 @@ import { loadState, saveState, type PollState } from "./stateStore.js";
 import { closePool } from "./db.js";
 import { runPollCycle } from "./pollCycle.js";
 import { sendDiscordMessage } from "./discordNotifier.js";
-import { getRecipients } from "./recipientStore.js";
+import { getChannelIds } from "./channelStore.js";
 import { startDiscordGateway } from "./discordGateway.js";
 import { log } from "./logger.js";
 
 /**
  * Entry point: loads config and prior state, connects the Discord Gateway (so newly
- * joined servers' owners get registered as recipients — see discordGateway.ts), sends
- * a one-time "bot started" DM to whoever's already registered, then loops forever
- * calling runPollCycle on POLL_INTERVAL_MS, persisting the resulting state after
- * every cycle. Returns when the process receives SIGINT/SIGTERM.
+ * joined servers get a channel registered — see discordGateway.ts), posts a one-time
+ * "bot started" message to whichever channels are already registered, then loops
+ * forever calling runPollCycle on POLL_INTERVAL_MS, persisting the resulting state
+ * after every cycle. Returns when the process receives SIGINT/SIGTERM.
  */
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -41,19 +41,19 @@ async function main(): Promise<void> {
 
   const gatewayClient = await startDiscordGateway(config.discordBotToken, config.databaseUrl);
 
-  const recipients = await getRecipients(config.databaseUrl);
-  if (recipients.length > 0) {
+  const channelIds = await getChannelIds(config.databaseUrl);
+  if (channelIds.length > 0) {
     await sendDiscordMessage(
       config.discordBotToken,
-      recipients,
-      `👋 Hi, this is a hobby project by Galib Mahmud Jim — let's see if it works!\n\n🤖 moviebot started — watching ${config.movieName} for new showtimes. You'll get a message here the moment tickets appear.`,
+      channelIds,
+      `👋 Hi, this is a hobby project by Galib Mahmud Jim — let's see if it works!\n\n🤖 moviebot started — watching ${config.movieName} for new showtimes. You'll see a message here the moment tickets appear.`,
     ).catch((error: unknown) =>
-      log("error", "Failed to send startup DM", {
+      log("error", "Failed to post startup message", {
         error: error instanceof Error ? error.message : String(error),
       }),
     );
   } else {
-    log("warn", "No recipients registered yet — add the bot to a server to register its owner");
+    log("warn", "No channels registered yet — add the bot to a server to register one");
   }
 
   const shutdown = (): void => {

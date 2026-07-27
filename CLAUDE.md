@@ -1,7 +1,7 @@
 # moviebot
 
-Discord alert bot that polls Cineplex Bangladesh's ticket API and DMs you directly
-when a new showtime/ticket becomes available for a specific movie, at a fixed
+Discord alert bot that polls Cineplex Bangladesh's ticket API and posts in a server
+channel when a new showtime/ticket becomes available for a specific movie, at a fixed
 date/location you configure in advance.
 
 ## How it works
@@ -23,43 +23,48 @@ date/location you configure in advance.
   first connect — no manual migration needed.
 - `src/discordGateway.ts` connects to Discord's Gateway (`GatewayIntentBits.Guilds`
   only — not a privileged intent, no portal toggle needed) purely to detect which
-  servers the bot is a member of. Whenever a server's owner becomes known — both
-  already-joined servers (checked once at startup) and newly-joined ones (via the
-  `guildCreate` event) — they're registered as an alert recipient via
-  `src/recipientStore.ts`, in a `discord_recipients` table in Postgres (auto-created,
-  same as `poll_state`). No manual user-id configuration: adding the bot to a server
-  is what makes its owner start receiving alerts.
-- `src/discordNotifier.ts` opens a DM channel with every registered recipient via the
-  bot's REST API (`DISCORD_BOT_TOKEN`) and posts the same message to each one
-  independently — one recipient's failure doesn't block delivery to the others. Also
-  sends a separate warning message if the auth token expires — sent once per failure
-  episode (tracked via `state.authAlertSent`), not repeated on every poll, and reset
-  once a poll succeeds again so a future failure alerts again.
+  servers the bot is a member of, and pick a channel to post alerts in for each one:
+  the server's system channel if the bot can post there, otherwise the first text
+  channel it has Send Messages permission in. This runs both for already-joined
+  servers (checked once at startup) and newly-joined ones (via the `guildCreate`
+  event). The chosen channel is registered via `src/channelStore.ts`, in a
+  `discord_channels` table in Postgres (auto-created, same as `poll_state`). No
+  manual channel configuration: adding the bot to a server with permission to post
+  somewhere is what makes that server start receiving alerts.
+- `src/discordNotifier.ts` posts the same message directly into every registered
+  channel via the bot's REST API (`DISCORD_BOT_TOKEN`), independently — one channel's
+  failure (e.g. permissions revoked there) doesn't block posting to the others. Also
+  posts a separate warning if the auth token expires — sent once per failure episode
+  (tracked via `state.authAlertSent`), not repeated on every poll, and reset once a
+  poll succeeds again so a future failure alerts again.
 - `src/pollCycle.ts` holds the "do one poll" logic (fetch → diff → look up current
-  recipients → alert → return updated state).
+  channels → alert → return updated state).
 - `src/index.ts` is the only entry point: loads config, connects the Discord Gateway,
-  sends a one-time "bot started" DM to whoever's already registered, then loops
-  forever on `POLL_INTERVAL_MS` calling `runPollCycle`, persisting state after every
-  cycle. No cron/scheduler involved — the process itself stays running, keeps the
-  Gateway connection open, and paces its own polling via `setTimeout`.
+  posts a one-time "bot started" message to whichever channels are already
+  registered, then loops forever on `POLL_INTERVAL_MS` calling `runPollCycle`,
+  persisting state after every cycle. No cron/scheduler involved — the process itself
+  stays running, keeps the Gateway connection open, and paces its own polling via
+  `setTimeout`.
 
-## Discord DM setup
+## Discord alert setup
 
-Webhooks can only post into server channels, not personal DMs, so this needs an
-actual bot application:
+This needs an actual bot application (not a webhook) since it needs to detect which
+servers it's in and post there automatically:
 
 1. <https://discord.com/developers/applications> → New Application → **Bot** tab →
    Reset Token → copy it into `.env` as `DISCORD_BOT_TOKEN`.
-2. Same app → **OAuth2** → URL Generator → scope `bot` (no permissions needed) → open
-   the generated URL and add the bot to a server. That server's owner is automatically
-   registered as a recipient the next time the bot process starts (or immediately, if
-   it's already running) — see "How it works" above. To add another recipient, add
-   the bot to another server they own; there's currently no way to register anyone
-   other than a server's owner (e.g. a regular member) without extending
-   `discordGateway.ts`/`recipientStore.ts` further.
+2. Same app → **OAuth2** → URL Generator → scope `bot` → under **Bot Permissions**,
+   check **View Channel** and **Send Messages** (this is required now — the bot
+   posts in a channel, unlike an earlier DM-only version of this bot that needed no
+   permissions at all) → open the generated URL and add the bot to a server. A
+   channel there is automatically registered the next time the bot process starts
+   (or immediately, if it's already running) — see "How it works" above.
+3. If the bot was added to a server *before* this permission existed, redo step 2's
+   authorize flow for that server (same URL, same server) — Discord updates the
+   bot's granted permissions in-place, it doesn't require kicking and re-adding it.
 
-The bot posts nothing in any server itself, and doesn't need any message-related
-intents — it only watches for guild membership changes and DMs recipients directly.
+The bot never sends or reacts to messages, and doesn't need any message-content
+intents — it only watches for guild membership changes and posts alerts directly.
 
 ## Auth token: manual refresh only, by design
 
@@ -135,8 +140,8 @@ showtime added to the watched date) is what triggers an alert.
 
 - `src/stateStore.ts` — poll state (fingerprints of seen sessions, and the one-time
   auth-alert flag) in a single-row `poll_state` table.
-- `src/recipientStore.ts` — registered Discord recipients in a `discord_recipients`
-  table (`user_id`, `guild_id`, `added_at`).
+- `src/channelStore.ts` — registered alert channels in a `discord_channels` table
+  (`guild_id`, `channel_id`, `added_at`).
 
 Both tables are created automatically on first connect via `CREATE TABLE IF NOT
 EXISTS` — no manual migration step. `index.ts` closes the shared pool explicitly on
