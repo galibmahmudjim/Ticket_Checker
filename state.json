@@ -1,6 +1,0 @@
-{
-  "fingerprints": [
-    "{\"locId\":2,\"movieId\":1687,\"movieTitle\":\"Billie Eilish: Hit Me Hard and Soft - The Tour Live in 3D\",\"screenID\":9,\"screenTitle\":\"Hall 3\",\"screenTypeID\":1,\"screenTypeName\":\"Regular\",\"showDate\":\"2026-07-28\",\"showTimes\":[{\"profileId\":9,\"programId\":29903,\"seatPrices\":[{\"seatTypeID\":1,\"seatTypeTitle\":\"Regular\",\"unitPrice\":450},{\"seatTypeID\":2,\"seatTypeTitle\":\"Premium\",\"unitPrice\":500}],\"showTime\":\"19:45:00\"}]}"
-  ],
-  "authAlertSent": false
-}
