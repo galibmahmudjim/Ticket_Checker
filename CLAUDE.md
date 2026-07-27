@@ -67,9 +67,10 @@ detects and writes this automatically).
 
 ## Movie name lookup token: manual, and separate from the ticket auth
 
-`CINEPLEX_MOVIE_NAME` (used in Discord messages instead of the raw id) is a static
-value in `.env` — the running bot never looks it up itself. To find the name for a
-`CINEPLEX_MOVIE_ID` (e.g. when switching movies), query cineplexbd.com's public
+The movie being watched (`MOVIE_ID`/`MOVIE_NAME`, used in Discord messages instead of
+the raw id) is hardcoded in `src/config.ts` — not read from env — so there's exactly one
+source of truth and the id/name can't drift out of sync with each other. To find the
+name for a movie id (e.g. when switching movies), query cineplexbd.com's public
 movie-list API, which needs its own Bearer token, unrelated to the ticket-api auth
 above (different host: `cineplex-web-api.cineplexbd.com` vs
 `cineplex-ticket-api.cineplexbd.com`):
@@ -80,7 +81,7 @@ above (different host: `cineplex-web-api.cineplexbd.com` vs
 2. `POST` to `https://cineplex-web-api.cineplexbd.com/api/v1/movie-list` with that
    Bearer token (and `appsource: web`) to get back `{"data":{"running":[...],...}}`,
    where each entry has `movie_id` and `title` — match on `movie_id` and copy the
-   `title` into `CINEPLEX_MOVIE_NAME`.
+   `title` into `MOVIE_NAME` in `src/config.ts`.
 
 Like the ticket auth, this token is refreshed manually (repeat the DevTools steps above)
 whenever it expires — there's no automated refresh script for it, since it's only ever

@@ -29,8 +29,6 @@ jobs:
       - name: Poll for ticket availability
         run: npm run run-once
         env:
-          CINEPLEX_MOVIE_ID: "1688"
-          CINEPLEX_MOVIE_NAME: "Spider-Man: Brand New Day"
           CINEPLEX_DEVICE_KEY: ${{ secrets.CINEPLEX_DEVICE_KEY }}
           CINEPLEX_AUTH_TOKEN: ${{ secrets.CINEPLEX_AUTH_TOKEN }}
           CINEPLEX_AUTH_HEADER_NAME: authorization

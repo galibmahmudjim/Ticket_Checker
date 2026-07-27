@@ -1,5 +1,8 @@
 import "dotenv/config";
 
+const MOVIE_ID = 1688;
+const MOVIE_NAME = "Spider-Man: Brand New Day";
+
 export interface AppConfig {
   readonly movieId: number;
   readonly movieName: string;
@@ -30,8 +33,8 @@ function requireEnv(name: string): string {
  */
 export function loadConfig(): AppConfig {
   return {
-    movieId: Number(process.env.CINEPLEX_MOVIE_ID ?? "1688"),
-    movieName: process.env.CINEPLEX_MOVIE_NAME ?? `movie ${process.env.CINEPLEX_MOVIE_ID ?? "1688"}`,
+    movieId: MOVIE_ID,
+    movieName: MOVIE_NAME,
     cineplexBaseUrl:
       process.env.CINEPLEX_BASE_URL ?? "https://cineplex-ticket-api.cineplexbd.com/api/v1",
     appSource: process.env.CINEPLEX_APPSOURCE ?? "web",
