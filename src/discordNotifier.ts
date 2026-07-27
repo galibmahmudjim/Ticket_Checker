@@ -1,6 +1,4 @@
 const COMMON_DATE_KEYS = ["date", "show_date", "showDate"] as const;
-const COMMON_TIME_KEYS = ["time", "show_time", "showTime"] as const;
-const COMMON_HALL_KEYS = ["location", "hall", "hall_name", "screen", "venue"] as const;
 
 function firstDefined(record: Record<string, unknown>, keys: readonly string[]): unknown {
   for (const key of keys) {
@@ -9,27 +7,6 @@ function firstDefined(record: Record<string, unknown>, keys: readonly string[]):
     }
   }
   return undefined;
-}
-
-/**
- * Builds a human-readable one-line description of a single showdate/showtime entry
- * for use in a Discord message. Returns "date | time | Location N" when those fields
- * can be guessed from common field names, otherwise falls back to the entry's raw JSON.
- */
-export function formatShowEntry(entry: unknown): string {
-  if (typeof entry !== "object" || entry === null) {
-    return String(entry);
-  }
-
-  const record = entry as Record<string, unknown>;
-  const location = firstDefined(record, COMMON_HALL_KEYS);
-  const parts = [
-    firstDefined(record, COMMON_DATE_KEYS),
-    firstDefined(record, COMMON_TIME_KEYS),
-    location !== undefined ? `Location ${location}` : undefined,
-  ].filter((part) => part !== undefined);
-
-  return parts.length > 0 ? parts.map(String).join(" | ") : JSON.stringify(record);
 }
 
 /**

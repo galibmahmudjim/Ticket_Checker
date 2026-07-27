@@ -2,10 +2,14 @@ import "dotenv/config";
 
 const MOVIE_ID = 1688;
 const MOVIE_NAME = "Spider-Man: Brand New Day";
+const SHOW_DATE = "2026-07-28";
+const LOCATION = 2;
 
 export interface AppConfig {
   readonly movieId: number;
   readonly movieName: string;
+  readonly showDate: string;
+  readonly location: number;
   readonly cineplexBaseUrl: string;
   readonly appSource: string;
   readonly deviceKey: string;
@@ -34,6 +38,8 @@ export function loadConfig(): AppConfig {
   return {
     movieId: MOVIE_ID,
     movieName: MOVIE_NAME,
+    showDate: SHOW_DATE,
+    location: LOCATION,
     cineplexBaseUrl:
       process.env.CINEPLEX_BASE_URL ?? "https://cineplex-ticket-api.cineplexbd.com/api/v1",
     appSource: process.env.CINEPLEX_APPSOURCE ?? "web",

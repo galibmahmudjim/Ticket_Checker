@@ -81,29 +81,17 @@ async function callCineplexApi(
 }
 
 /**
- * Calls the Cineplex get-showdate endpoint for the configured movie. Returns the raw
- * list of showdate entries (empty array if none). Throws CineplexAuthError on auth
- * failure, or a generic Error for any other API-level or network failure.
+ * Calls the Cineplex get-shows endpoint for the configured movie/location/showDate to
+ * fetch the actual show sessions (times, halls, seat prices) on sale for that fixed
+ * date. Returns the raw list of screening entries (empty array if none). Throws
+ * CineplexAuthError on auth failure, or a generic Error for any other API-level or
+ * network failure.
  */
-export async function fetchShowdates(config: AppConfig): Promise<readonly unknown[]> {
-  const data = await callCineplexApi(config, "get-showdate", { movie_id: config.movieId });
-  return Array.isArray(data) ? data : [];
-}
-
-/**
- * Calls the Cineplex get-shows endpoint for one specific showdate entry (location +
- * movieId + showDate) to fetch the actual show sessions (times, halls, etc.) on sale
- * for that date. Returns the raw `data` value as-is — its exact shape isn't confirmed
- * yet, so callers should treat it schema-agnostically. Throws CineplexAuthError on
- * auth failure, or a generic Error for any other API-level or network failure.
- */
-export async function fetchShows(
-  config: AppConfig,
-  entry: { readonly location: unknown; readonly movieId: unknown; readonly showDate: unknown },
-): Promise<unknown> {
-  return callCineplexApi(config, "get-shows", {
-    location: entry.location,
-    movieId: entry.movieId,
-    showDate: entry.showDate,
+export async function fetchShows(config: AppConfig): Promise<readonly unknown[]> {
+  const data = await callCineplexApi(config, "get-shows", {
+    location: config.location,
+    movieId: config.movieId,
+    showDate: config.showDate,
   });
+  return Array.isArray(data) ? data : [];
 }

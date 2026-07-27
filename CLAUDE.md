@@ -1,25 +1,31 @@
 # moviebot
 
 Discord alert bot that polls Cineplex Bangladesh's ticket API and DMs you directly
-when a new showtime/ticket becomes available for a specific movie.
+when a new showtime/ticket becomes available for a specific movie, at a fixed
+date/location you configure in advance.
 
 ## How it works
 
-- `src/cineplexClient.ts` calls `POST {CINEPLEX_BASE_URL}/get-showdate` with
-  `movie_id`, plus `appsource` / `device-key` headers and a Bearer auth token. It also
-  exposes `fetchShows()`, which calls `POST {CINEPLEX_BASE_URL}/get-shows` with
-  `{location, movieId, showDate}` (the fields of one showdate entry) to fetch the
-  actual show sessions on sale for that date — used to enrich alerts for new entries.
-- `src/showtimeDiff.ts` fingerprints each returned showdate entry and diffs against
+- `src/config.ts` hardcodes the movie/date/location being watched (`MOVIE_ID`,
+  `MOVIE_NAME`, `SHOW_DATE`, `LOCATION`) — not read from env — so there's exactly one
+  source of truth and they can't drift out of sync with each other. The bot does not
+  discover dates on its own (`get-showdate` isn't used); you tell it exactly which
+  date/location to watch, e.g. because you already know when a movie is expected to
+  open at your preferred cinema.
+- `src/cineplexClient.ts`'s `fetchShows()` calls `POST {CINEPLEX_BASE_URL}/get-shows`
+  with `{location, movieId, showDate}` from config to fetch the actual show sessions
+  (times, halls, seat prices) on sale for that fixed date, plus `appsource` /
+  `device-key` headers and a Bearer auth token.
+- `src/showtimeDiff.ts` fingerprints each returned session entry and diffs against
   the previous poll's fingerprints (persisted via `src/stateStore.ts` to
-  `STATE_FILE_PATH`) to find genuinely new entries.
+  `STATE_FILE_PATH`) to find genuinely new sessions (e.g. a showtime just went on sale
+  for the watched date).
 - `src/discordNotifier.ts` opens a DM channel with `DISCORD_USER_ID` via the bot's
-  REST API (`DISCORD_BOT_TOKEN`) and posts a message there when new entries appear
-  (with `get-shows` session details underneath, if any come back), and a separate
-  warning message if the auth token expires — sent once per failure episode (tracked
-  via `state.authAlertSent`), not repeated on every poll, and reset once a poll
-  succeeds again so a future failure alerts again. No gateway connection — just
-  one-off REST calls, since we're only ever sending, never listening.
+  REST API (`DISCORD_BOT_TOKEN`) and posts a message there when new sessions appear,
+  and a separate warning message if the auth token expires — sent once per failure
+  episode (tracked via `state.authAlertSent`), not repeated on every poll, and reset
+  once a poll succeeds again so a future failure alerts again. No gateway connection —
+  just one-off REST calls, since we're only ever sending, never listening.
 - `src/pollCycle.ts` holds the shared "do one poll" logic (fetch → diff → alert →
   return updated state) used by both entry points below.
 - `src/index.ts` is the long-lived entry point (local/Docker): loads config, sends a
@@ -51,7 +57,7 @@ The API's `guest-login` endpoint requires solving a CAPTCHA, so this bot does no
 attempt to log in itself, and never will. Two ways to get a token:
 
 **Manually via DevTools**: open `https://ticket.cineplexbd.com/login`, open DevTools →
-Network, log in yourself, and find the Bearer token used on subsequent `get-showdate`
+Network, log in yourself, and find the Bearer token used on subsequent `get-shows`
 requests. Put it in `.env` as `CINEPLEX_AUTH_TOKEN`.
 
 **Via the helper script** (`npm run refresh-token`): opens a real, visible Chromium
@@ -93,23 +99,25 @@ Like the ticket auth, this token is refreshed manually (repeat the DevTools step
 whenever it expires — there's no automated refresh script for it, since it's only ever
 needed once per movie switch, not on a recurring poll.
 
+When switching movies, also update `SHOW_DATE`/`LOCATION` in `src/config.ts` — the bot
+watches one fixed date/location combo, it doesn't discover dates on its own (see "How
+it works" above).
+
 ## Response schema: confirmed
 
-With a real token, `get-showdate` returns `{"status":"success","code":200,"data":[],"message":["Request Success"]}`
-for movie 1688 — `data` is empty since it's still "Coming Soon" (no showtimes on sale
-yet). For a movie that's currently showing (e.g. 1705), a `data` entry looks like
-`{"location":1,"movieId":1705,"showDate":"2026-07-28"}` — just a numeric location id
-and a date, no time-of-day field. `formatShowEntry()` in `discordNotifier.ts` picks up
-`showDate` and formats `location` as `Location N`; `showtimeDiff.ts` fingerprints the
-whole entry regardless of schema, so it isn't affected either way.
-
-`get-shows` (called per new entry with that entry's `{location, movieId, showDate}`)
-returns the actual sessions on sale for that date — confirmed shape is a list of
-screenings, each `{..., "screenTitle":"Hall 1", "showTimes":[{"showTime":"11:20:00",
-"seatPrices":[{"seatTypeTitle":"Regular","unitPrice":400}, ...]}, ...]}`.
+`get-shows` (called every poll with the fixed `{location, movieId, showDate}` from
+`src/config.ts`) returns `{"status":"success","code":200,"data":[...]}` where `data`
+is a list of screenings — confirmed shape is `{"locId":2,"movieId":1705,
+"movieTitle":"...","showDate":"2026-07-28","screenTitle":"Hall 1",
+"showTimes":[{"showTime":"11:20:00","seatPrices":[{"seatTypeTitle":"Regular",
+"unitPrice":400}, ...]}, ...]}`. `data` is `[]` when nothing is on sale yet for that
+date/location (e.g. movie 1688 is still "Coming Soon" as of this writing).
 `formatShowSessions()` in `discordNotifier.ts` turns each showtime into a line like
-`Hall 1 11:20:00 (Regular ৳400, Premium ৳450)`, falling back to raw JSON for a
-screening that doesn't match this shape.
+`2026-07-28 Hall 1 11:20:00 (Regular ৳400, Premium ৳450)` — reading the date straight
+off each screening object, not off a separate discovery call — falling back to raw
+JSON for a screening that doesn't match this shape. `showtimeDiff.ts` fingerprints the
+whole screening entry regardless of schema, so a genuinely new session (e.g. a new
+showtime added to the watched date) is what triggers an alert.
 
 ## Running
 
