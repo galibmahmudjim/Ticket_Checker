@@ -1,6 +1,6 @@
 import "dotenv/config";
 
-const MOVIE_ID = 1688;
+const MOVIE_ID = 1687;
 const MOVIE_NAME = "Spider-Man: Brand New Day";
 const SHOW_DATE = "2026-07-28";
 const LOCATION = 2;
