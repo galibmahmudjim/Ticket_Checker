@@ -1,3 +1,5 @@
+import { log } from "./logger.js";
+
 const COMMON_DATE_KEYS = ["date", "show_date", "showDate"] as const;
 
 function firstDefined(record: Record<string, unknown>, keys: readonly string[]): unknown {
@@ -104,11 +106,11 @@ async function openDmChannel(botToken: string, userId: string): Promise<string> 
 }
 
 /**
- * Sends a plain-text Discord DM to the configured user via the bot's REST API: opens
- * the DM channel, then posts the message into it. Returns nothing on success; throws
- * an Error including the response status and body on failure.
+ * Sends a plain-text Discord DM to one user via the bot's REST API: opens the DM
+ * channel, then posts the message into it. Returns nothing on success; throws an
+ * Error including the response status and body on failure.
  */
-export async function sendDiscordMessage(
+async function sendDiscordMessageToUser(
   botToken: string,
   userId: string,
   content: string,
@@ -127,5 +129,33 @@ export async function sendDiscordMessage(
   if (!response.ok) {
     const body = await response.text();
     throw new Error(`Discord send-DM failed (${response.status}): ${body}`);
+  }
+}
+
+/**
+ * Sends the same plain-text Discord DM to every configured user id, independently —
+ * one recipient's failure (e.g. they haven't shared a server with the bot) doesn't
+ * block delivery to the others. Returns nothing if at least one recipient received
+ * it; throws an aggregate Error only if every recipient's send failed, so callers can
+ * still treat "delivered to nobody" as a failure worth retrying.
+ */
+export async function sendDiscordMessage(
+  botToken: string,
+  userIds: readonly string[],
+  content: string,
+): Promise<void> {
+  const results = await Promise.allSettled(
+    userIds.map((userId) => sendDiscordMessageToUser(botToken, userId, content)),
+  );
+
+  const failures = results.filter(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+  for (const failure of failures) {
+    log("error", "Failed to DM one recipient", { error: String(failure.reason) });
+  }
+
+  if (failures.length === results.length) {
+    throw new Error(`Discord send-DM failed for all ${results.length} recipient(s)`);
   }
 }

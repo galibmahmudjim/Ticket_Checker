@@ -36,7 +36,7 @@ async function main(): Promise<void> {
 
   await sendDiscordMessage(
     config.discordBotToken,
-    config.discordUserId,
+    config.discordUserIds,
     `👋 Hi, this is a hobby project by Galib Mahmud Jim — let's see if it works!\n\n🤖 moviebot started — watching ${config.movieName} for new showtimes. You'll get a message here the moment tickets appear.`,
   ).catch((error: unknown) =>
     log("error", "Failed to send startup DM", {

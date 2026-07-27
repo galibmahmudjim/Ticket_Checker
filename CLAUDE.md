@@ -21,9 +21,11 @@ date/location you configure in advance.
   table in Postgres, `DATABASE_URL`) to find genuinely new sessions (e.g. a showtime
   just went on sale for the watched date). The table is created automatically on
   first connect — no manual migration needed.
-- `src/discordNotifier.ts` opens a DM channel with `DISCORD_USER_ID` via the bot's
-  REST API (`DISCORD_BOT_TOKEN`) and posts a message there when new sessions appear,
-  and a separate warning message if the auth token expires — sent once per failure
+- `src/discordNotifier.ts` opens a DM channel with each id in `DISCORD_USER_IDS`
+  (comma-separated) via the bot's REST API (`DISCORD_BOT_TOKEN`) and posts the same
+  message to every recipient independently — one recipient's failure (e.g. they
+  haven't shared a server with the bot) doesn't block delivery to the others. Also
+  sends a separate warning message if the auth token expires — sent once per failure
   episode (tracked via `state.authAlertSent`), not repeated on every poll, and reset
   once a poll succeeds again so a future failure alerts again. No gateway connection —
   just one-off REST calls, since we're only ever sending, never listening.
@@ -42,15 +44,16 @@ actual bot application:
 1. <https://discord.com/developers/applications> → New Application → **Bot** tab →
    Reset Token → copy it into `.env` as `DISCORD_BOT_TOKEN`.
 2. Same app → **OAuth2** → URL Generator → scope `bot` (no permissions needed) → open
-   the generated URL and add the bot to any server you're also a member of (a private
-   server with just you is fine — the bot only needs to share *a* server with you;
-   Discord requires that before a bot can DM someone).
-3. In Discord, enable **Developer Mode** (User Settings → Advanced), then right-click
-   your own name/avatar anywhere → **Copy User ID** → put it in `.env` as
-   `DISCORD_USER_ID`.
+   the generated URL and add the bot to a server that *every* recipient is also a
+   member of (a private server with just you and them is fine — the bot only needs to
+   share *a* server with each recipient; Discord requires that before it can DM them).
+3. Each recipient: enable **Developer Mode** (User Settings → Advanced), then
+   right-click their own name/avatar anywhere → **Copy User ID**. Collect all of them
+   into `.env` as `DISCORD_USER_IDS`, comma-separated (e.g. `id1,id2,id3`) — a single
+   id works fine too, just without commas.
 
 The bot never needs to be online/connected to a gateway and never posts in the
-server itself — it only ever opens a DM channel with your user id and sends there.
+server itself — it only ever opens a DM channel with each user id and sends there.
 
 ## Auth token: manual refresh only, by design
 

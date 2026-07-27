@@ -15,8 +15,7 @@ import type { PollState } from "./stateStore.js";
  * silent on repeat failures until a poll succeeds again, at which point the flag
  * resets so a future failure alerts again. Returns the updated PollState for the
  * caller to persist; never throws — poll and Discord failures are logged and
- * swallowed so a single bad cycle (in-process loop or one-shot GitHub Actions run)
- * doesn't crash the caller.
+ * swallowed so a single bad cycle doesn't crash the caller's loop.
  */
 export async function runPollCycle(config: AppConfig, state: PollState): Promise<PollState> {
   try {
@@ -27,7 +26,7 @@ export async function runPollCycle(config: AppConfig, state: PollState): Promise
       const lines = formatShowSessions(newEntries).map((line) => `- ${line}`);
       await sendDiscordMessage(
         config.discordBotToken,
-        config.discordUserId,
+        config.discordUserIds,
         `🎬 **New showtime(s) available for ${config.movieName}!**\n${lines.join("\n")}\nBook now: https://ticket.cineplexbd.com`,
       );
       log("info", "Sent Discord alert for new showtimes", { count: newEntries.length });
@@ -44,7 +43,7 @@ export async function runPollCycle(config: AppConfig, state: PollState): Promise
       if (!state.authAlertSent) {
         await sendDiscordMessage(
           config.discordBotToken,
-          config.discordUserId,
+          config.discordUserIds,
           "⚠️ Cineplex auth token expired. Grab a fresh token from the browser, update `CINEPLEX_AUTH_TOKEN`, and restart the bot.",
         ).catch((notifyError: unknown) =>
           log("error", "Failed to send auth-expiry alert", { error: String(notifyError) }),

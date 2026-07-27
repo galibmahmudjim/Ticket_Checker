@@ -16,7 +16,7 @@ export interface AppConfig {
   readonly authToken: string;
   readonly authHeaderName: string;
   readonly discordBotToken: string;
-  readonly discordUserId: string;
+  readonly discordUserIds: readonly string[];
   readonly pollIntervalMs: number;
   readonly databaseUrl: string;
 }
@@ -47,7 +47,10 @@ export function loadConfig(): AppConfig {
     authToken: requireEnv("CINEPLEX_AUTH_TOKEN"),
     authHeaderName: process.env.CINEPLEX_AUTH_HEADER_NAME ?? "Authorization",
     discordBotToken: requireEnv("DISCORD_BOT_TOKEN"),
-    discordUserId: requireEnv("DISCORD_USER_ID"),
+    discordUserIds: requireEnv("DISCORD_USER_IDS")
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0),
     pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? "60000"),
     databaseUrl: requireEnv("DATABASE_URL"),
   };
