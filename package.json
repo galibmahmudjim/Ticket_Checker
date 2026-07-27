@@ -12,6 +12,7 @@
     "refresh-token": "tsx scripts/refreshToken.ts"
   },
   "dependencies": {
+    "discord.js": "^14.27.0",
     "dotenv": "^16.4.5",
     "pg": "^8.22.0"
   },

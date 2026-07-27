@@ -21,20 +21,27 @@ date/location you configure in advance.
   table in Postgres, `DATABASE_URL`) to find genuinely new sessions (e.g. a showtime
   just went on sale for the watched date). The table is created automatically on
   first connect — no manual migration needed.
-- `src/discordNotifier.ts` opens a DM channel with each id in `DISCORD_USER_IDS`
-  (comma-separated) via the bot's REST API (`DISCORD_BOT_TOKEN`) and posts the same
-  message to every recipient independently — one recipient's failure (e.g. they
-  haven't shared a server with the bot) doesn't block delivery to the others. Also
+- `src/discordGateway.ts` connects to Discord's Gateway (`GatewayIntentBits.Guilds`
+  only — not a privileged intent, no portal toggle needed) purely to detect which
+  servers the bot is a member of. Whenever a server's owner becomes known — both
+  already-joined servers (checked once at startup) and newly-joined ones (via the
+  `guildCreate` event) — they're registered as an alert recipient via
+  `src/recipientStore.ts`, in a `discord_recipients` table in Postgres (auto-created,
+  same as `poll_state`). No manual user-id configuration: adding the bot to a server
+  is what makes its owner start receiving alerts.
+- `src/discordNotifier.ts` opens a DM channel with every registered recipient via the
+  bot's REST API (`DISCORD_BOT_TOKEN`) and posts the same message to each one
+  independently — one recipient's failure doesn't block delivery to the others. Also
   sends a separate warning message if the auth token expires — sent once per failure
   episode (tracked via `state.authAlertSent`), not repeated on every poll, and reset
-  once a poll succeeds again so a future failure alerts again. No gateway connection —
-  just one-off REST calls, since we're only ever sending, never listening.
-- `src/pollCycle.ts` holds the "do one poll" logic (fetch → diff → alert → return
-  updated state).
-- `src/index.ts` is the only entry point: loads config, sends a one-time "bot started"
-  DM, then loops forever on `POLL_INTERVAL_MS` calling `runPollCycle`, persisting
-  state after every cycle. No cron/scheduler involved — the process itself stays
-  running and paces its own polling via `setTimeout`.
+  once a poll succeeds again so a future failure alerts again.
+- `src/pollCycle.ts` holds the "do one poll" logic (fetch → diff → look up current
+  recipients → alert → return updated state).
+- `src/index.ts` is the only entry point: loads config, connects the Discord Gateway,
+  sends a one-time "bot started" DM to whoever's already registered, then loops
+  forever on `POLL_INTERVAL_MS` calling `runPollCycle`, persisting state after every
+  cycle. No cron/scheduler involved — the process itself stays running, keeps the
+  Gateway connection open, and paces its own polling via `setTimeout`.
 
 ## Discord DM setup
 
@@ -44,16 +51,15 @@ actual bot application:
 1. <https://discord.com/developers/applications> → New Application → **Bot** tab →
    Reset Token → copy it into `.env` as `DISCORD_BOT_TOKEN`.
 2. Same app → **OAuth2** → URL Generator → scope `bot` (no permissions needed) → open
-   the generated URL and add the bot to a server that *every* recipient is also a
-   member of (a private server with just you and them is fine — the bot only needs to
-   share *a* server with each recipient; Discord requires that before it can DM them).
-3. Each recipient: enable **Developer Mode** (User Settings → Advanced), then
-   right-click their own name/avatar anywhere → **Copy User ID**. Collect all of them
-   into `.env` as `DISCORD_USER_IDS`, comma-separated (e.g. `id1,id2,id3`) — a single
-   id works fine too, just without commas.
+   the generated URL and add the bot to a server. That server's owner is automatically
+   registered as a recipient the next time the bot process starts (or immediately, if
+   it's already running) — see "How it works" above. To add another recipient, add
+   the bot to another server they own; there's currently no way to register anyone
+   other than a server's owner (e.g. a regular member) without extending
+   `discordGateway.ts`/`recipientStore.ts` further.
 
-The bot never needs to be online/connected to a gateway and never posts in the
-server itself — it only ever opens a DM channel with each user id and sends there.
+The bot posts nothing in any server itself, and doesn't need any message-related
+intents — it only watches for guild membership changes and DMs recipients directly.
 
 ## Auth token: manual refresh only, by design
 
@@ -125,10 +131,16 @@ showtime added to the watched date) is what triggers an alert.
 
 ## State persistence: Postgres
 
-`src/stateStore.ts` stores poll state (fingerprints of seen sessions, and the
-one-time auth-alert flag) in a single-row `poll_state` table, created automatically
-on first connect via `CREATE TABLE IF NOT EXISTS` — no manual migration step.
-`index.ts` closes the connection pool explicitly on shutdown (SIGINT/SIGTERM).
+`src/db.ts` holds one shared connection pool (`DATABASE_URL`), used by both:
+
+- `src/stateStore.ts` — poll state (fingerprints of seen sessions, and the one-time
+  auth-alert flag) in a single-row `poll_state` table.
+- `src/recipientStore.ts` — registered Discord recipients in a `discord_recipients`
+  table (`user_id`, `guild_id`, `added_at`).
+
+Both tables are created automatically on first connect via `CREATE TABLE IF NOT
+EXISTS` — no manual migration step. `index.ts` closes the shared pool explicitly on
+shutdown (SIGINT/SIGTERM).
 
 ## Running
 
