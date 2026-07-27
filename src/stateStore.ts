@@ -3,18 +3,18 @@ import path from "node:path";
 
 interface PersistedState {
   readonly fingerprints: readonly string[];
-  readonly lastAuthAlertAt: number;
+  readonly authAlertSent: boolean;
 }
 
 export interface PollState {
   readonly fingerprints: ReadonlySet<string>;
   readonly hasPolledBefore: boolean;
-  readonly lastAuthAlertAt: number;
+  readonly authAlertSent: boolean;
 }
 
 /**
  * Reads the persisted poll state from disk at stateFilePath.
- * Returns { fingerprints, lastAuthAlertAt, hasPolledBefore: true } if a state file
+ * Returns { fingerprints, authAlertSent, hasPolledBefore: true } if a state file
  * already exists (even with zero fingerprints, meaning a prior poll found no
  * showtimes), or a zeroed-out state with hasPolledBefore: false if this is the very
  * first run (whether that's the first-ever run of a long-lived process, or the
@@ -28,11 +28,11 @@ export async function loadState(stateFilePath: string): Promise<PollState> {
     return {
       fingerprints: new Set(parsed.fingerprints),
       hasPolledBefore: true,
-      lastAuthAlertAt: parsed.lastAuthAlertAt ?? 0,
+      authAlertSent: parsed.authAlertSent ?? false,
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { fingerprints: new Set(), hasPolledBefore: false, lastAuthAlertAt: 0 };
+      return { fingerprints: new Set(), hasPolledBefore: false, authAlertSent: false };
     }
     throw error;
   }
@@ -47,7 +47,7 @@ export async function saveState(stateFilePath: string, state: PollState): Promis
   await fs.mkdir(path.dirname(stateFilePath), { recursive: true });
   const payload: PersistedState = {
     fingerprints: [...state.fingerprints],
-    lastAuthAlertAt: state.lastAuthAlertAt,
+    authAlertSent: state.authAlertSent,
   };
   await fs.writeFile(stateFilePath, JSON.stringify(payload, null, 2), "utf-8");
 }

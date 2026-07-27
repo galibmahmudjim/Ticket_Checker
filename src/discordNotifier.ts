@@ -32,6 +32,30 @@ export function formatShowEntry(entry: unknown): string {
   return parts.length > 0 ? parts.map(String).join(" | ") : JSON.stringify(record);
 }
 
+/**
+ * Builds human-readable one-line descriptions of each session in a get-shows response
+ * (e.g. individual showtimes/halls on sale for one showdate). Returns "time | hall"
+ * per session when those fields can be guessed from common field names, otherwise
+ * each session's raw JSON. Returns an empty array if `sessions` isn't a list.
+ */
+export function formatShowSessions(sessions: unknown): readonly string[] {
+  if (!Array.isArray(sessions)) {
+    return [];
+  }
+
+  return sessions.map((session) => {
+    if (typeof session !== "object" || session === null) {
+      return String(session);
+    }
+    const record = session as Record<string, unknown>;
+    const parts = [
+      firstDefined(record, COMMON_TIME_KEYS),
+      firstDefined(record, COMMON_HALL_KEYS),
+    ].filter((part) => part !== undefined);
+    return parts.length > 0 ? parts.map(String).join(" | ") : JSON.stringify(record);
+  });
+}
+
 const DISCORD_API_BASE_URL = "https://discord.com/api/v10";
 
 /**

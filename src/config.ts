@@ -15,7 +15,6 @@ export interface AppConfig {
   readonly discordUserId: string;
   readonly pollIntervalMs: number;
   readonly stateFilePath: string;
-  readonly authErrorAlertCooldownMs: number;
 }
 
 function requireEnv(name: string): string {
@@ -45,6 +44,5 @@ export function loadConfig(): AppConfig {
     discordUserId: requireEnv("DISCORD_USER_ID"),
     pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? "60000"),
     stateFilePath: process.env.STATE_FILE_PATH ?? "./data/state.json",
-    authErrorAlertCooldownMs: Number(process.env.AUTH_ERROR_ALERT_COOLDOWN_MS ?? String(30 * 60 * 1000)),
   };
 }

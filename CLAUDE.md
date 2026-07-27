@@ -6,14 +6,20 @@ when a new showtime/ticket becomes available for a specific movie.
 ## How it works
 
 - `src/cineplexClient.ts` calls `POST {CINEPLEX_BASE_URL}/get-showdate` with
-  `movie_id`, plus `appsource` / `device-key` headers and a Bearer auth token.
+  `movie_id`, plus `appsource` / `device-key` headers and a Bearer auth token. It also
+  exposes `fetchShows()`, which calls `POST {CINEPLEX_BASE_URL}/get-shows` with
+  `{location, movieId, showDate}` (the fields of one showdate entry) to fetch the
+  actual show sessions on sale for that date — used to enrich alerts for new entries.
 - `src/showtimeDiff.ts` fingerprints each returned showdate entry and diffs against
   the previous poll's fingerprints (persisted via `src/stateStore.ts` to
   `STATE_FILE_PATH`) to find genuinely new entries.
 - `src/discordNotifier.ts` opens a DM channel with `DISCORD_USER_ID` via the bot's
-  REST API (`DISCORD_BOT_TOKEN`) and posts a message there when new entries appear,
-  and a separate warning message if the auth token expires. No gateway connection —
-  just one-off REST calls, since we're only ever sending, never listening.
+  REST API (`DISCORD_BOT_TOKEN`) and posts a message there when new entries appear
+  (with `get-shows` session details underneath, if any come back), and a separate
+  warning message if the auth token expires — sent once per failure episode (tracked
+  via `state.authAlertSent`), not repeated on every poll, and reset once a poll
+  succeeds again so a future failure alerts again. No gateway connection — just
+  one-off REST calls, since we're only ever sending, never listening.
 - `src/pollCycle.ts` holds the shared "do one poll" logic (fetch → diff → alert →
   return updated state) used by both entry points below.
 - `src/index.ts` is the long-lived entry point (local/Docker): loads config, sends a
@@ -96,6 +102,13 @@ yet). For a movie that's currently showing (e.g. 1705), a `data` entry looks lik
 and a date, no time-of-day field. `formatShowEntry()` in `discordNotifier.ts` picks up
 `showDate` and formats `location` as `Location N`; `showtimeDiff.ts` fingerprints the
 whole entry regardless of schema, so it isn't affected either way.
+
+`get-shows` (called per new entry with that entry's `{location, movieId, showDate}`)
+returns the actual sessions on sale for that date — its exact response shape isn't
+confirmed yet (no real showtime has gone on sale for the watched movie so far), so
+`formatShowSessions()` reads it the same schema-agnostically-guessing way
+`formatShowEntry()` does. Check the first real `get-shows` response to confirm session
+lines display sensibly, and adjust the field-name guesses if needed.
 
 ## Running
 
