@@ -39,19 +39,21 @@ function findTargetChannel(guild: Guild): TextChannel | undefined {
  * swallows failures so one bad registration doesn't take down the gateway
  * connection.
  */
-async function registerGuild(databaseUrl: string, guild: Guild): Promise<void> {
+async function registerGuild(databaseUrl: string, guild: Guild): Promise<string | undefined> {
   try {
     const channel = findTargetChannel(guild);
     if (!channel) {
       log("warn", "No postable channel found for guild", { guildId: guild.id });
-      return;
+      return undefined;
     }
     await registerGuildChannel(databaseUrl, guild.id, channel.id);
+    return channel.id;
   } catch (error) {
     log("error", "Failed to register guild channel", {
       guildId: guild.id,
       error: error instanceof Error ? error.message : String(error),
     });
+    return undefined;
   }
 }
 
@@ -83,15 +85,26 @@ async function pruneStaleGuilds(databaseUrl: string, currentGuildIds: Set<string
  * the client is ready, since discord.js populates those into cache directly without
  * emitting an event per guild) and for guilds joined afterward (via the guildCreate
  * event, which only fires for genuinely new joins). Also removes registrations for
- * guilds the bot is removed from, via guildDelete and a startup prune. Returns the
- * connected Client once ready and initial guilds are reconciled, so the caller can
- * safely look up channels immediately after, and destroy the client on shutdown.
+ * guilds the bot is removed from, via guildDelete and a startup prune. `onGuildJoined`
+ * is invoked with the newly registered channel id right after a *new* join, so the
+ * caller can post to it immediately instead of leaving that server silent until the
+ * next poll tick. Returns the connected Client once ready and initial guilds are
+ * reconciled, so the caller can safely look up channels immediately after, and
+ * destroy the client on shutdown.
  */
-export async function startDiscordGateway(botToken: string, databaseUrl: string): Promise<Client> {
+export async function startDiscordGateway(
+  botToken: string,
+  databaseUrl: string,
+  onGuildJoined?: (channelId: string) => void,
+): Promise<Client> {
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
   client.on(Events.GuildCreate, (guild) => {
-    void registerGuild(databaseUrl, guild);
+    void registerGuild(databaseUrl, guild).then((channelId) => {
+      if (channelId) {
+        onGuildJoined?.(channelId);
+      }
+    });
   });
 
   client.on(Events.GuildDelete, (guild) => {

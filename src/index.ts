@@ -1,7 +1,7 @@
 import { loadConfig } from "./config.js";
 import { loadState, saveState, type PollState } from "./stateStore.js";
 import { closePool } from "./db.js";
-import { runPollCycle } from "./pollCycle.js";
+import { runPollCycle, deliverToNewChannel } from "./pollCycle.js";
 import { sendDiscordMessage } from "./discordNotifier.js";
 import { getChannelIds } from "./channelStore.js";
 import { startDiscordGateway } from "./discordGateway.js";
@@ -39,7 +39,13 @@ async function main(): Promise<void> {
     pollIntervalMs: config.pollIntervalMs,
   });
 
-  const gatewayClient = await startDiscordGateway(config.discordBotToken, config.databaseUrl);
+  const gatewayClient = await startDiscordGateway(
+    config.discordBotToken,
+    config.databaseUrl,
+    (channelId) => {
+      void deliverToNewChannel(config, channelId);
+    },
+  );
 
   const channelIds = await getChannelIds(config.databaseUrl);
   if (channelIds.length > 0) {

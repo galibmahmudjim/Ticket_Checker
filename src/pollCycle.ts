@@ -2,9 +2,78 @@ import type { AppConfig } from "./config.js";
 import { fetchShows, CineplexAuthError } from "./cineplexClient.js";
 import { findNewEntries } from "./showtimeDiff.js";
 import { formatShowSessions, sendDiscordMessage } from "./discordNotifier.js";
-import { getChannelIds, getChannelStates, saveChannelState } from "./channelStore.js";
+import {
+  getChannelIds,
+  getChannelStates,
+  getChannelState,
+  saveChannelState,
+  type ChannelState,
+} from "./channelStore.js";
 import { log } from "./logger.js";
 import type { PollState } from "./stateStore.js";
+
+/**
+ * Posts to one channel whatever sessions are new relative to that channel's own
+ * fingerprint history, then records the updated history. A channel's first delivery
+ * is worded as a "now watching" catch-up (it hasn't seen anything yet, so everything
+ * on sale is news to it); later ones as "new showtime(s)". Returns nothing; throws
+ * only if the Discord post or the state write fails, so callers can decide whether
+ * to log-and-continue or retry.
+ */
+async function deliverToChannel(
+  config: AppConfig,
+  sessions: readonly unknown[],
+  channel: ChannelState,
+): Promise<void> {
+  const { newEntries, allFingerprints } = findNewEntries(sessions, channel.fingerprints);
+
+  if (newEntries.length > 0) {
+    const heading = channel.hasPolledBefore
+      ? `🎬 **New showtime(s) available for ${config.movieName}!**`
+      : `🎬 **Now watching ${config.movieName} — showtime(s) currently on sale:**`;
+    const lines = formatShowSessions(newEntries).map((line) => `- ${line}`);
+    await sendDiscordMessage(
+      config.discordBotToken,
+      [channel.channelId],
+      `${heading}\n${lines.join("\n")}\nBook now: https://ticket.cineplexbd.com`,
+    );
+    log("info", "Sent Discord alert", {
+      count: newEntries.length,
+      channelId: channel.channelId,
+      firstPoll: !channel.hasPolledBefore,
+    });
+  }
+
+  await saveChannelState(config.databaseUrl, {
+    channelId: channel.channelId,
+    fingerprints: allFingerprints,
+    hasPolledBefore: true,
+  });
+}
+
+/**
+ * Delivers the current showtimes to a single freshly registered channel, right when
+ * its server adds the bot — without this, a new server would stay silent until the
+ * next POLL_INTERVAL_MS tick (up to 10 minutes), which reads as the bot not working.
+ * Fetches sessions on its own since it runs outside the poll loop. Returns nothing;
+ * never throws — failures are logged, and the regular poll loop will retry.
+ */
+export async function deliverToNewChannel(config: AppConfig, channelId: string): Promise<void> {
+  try {
+    const channel = await getChannelState(config.databaseUrl, channelId);
+    if (!channel) {
+      log("warn", "Channel vanished before its welcome delivery", { channelId });
+      return;
+    }
+    const sessions = await fetchShows(config);
+    await deliverToChannel(config, sessions, channel);
+  } catch (error) {
+    log("error", "Failed to deliver to newly added channel; poll loop will retry", {
+      channelId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 
 /**
  * Runs exactly one poll: fetches get-shows sessions for the fixed
@@ -29,30 +98,7 @@ export async function runPollCycle(config: AppConfig, state: PollState): Promise
 
     for (const channel of channels) {
       try {
-        const { newEntries, allFingerprints } = findNewEntries(sessions, channel.fingerprints);
-
-        if (newEntries.length > 0) {
-          const heading = channel.hasPolledBefore
-            ? `🎬 **New showtime(s) available for ${config.movieName}!**`
-            : `🎬 **Now watching ${config.movieName} — showtime(s) currently on sale:**`;
-          const lines = formatShowSessions(newEntries).map((line) => `- ${line}`);
-          await sendDiscordMessage(
-            config.discordBotToken,
-            [channel.channelId],
-            `${heading}\n${lines.join("\n")}\nBook now: https://ticket.cineplexbd.com`,
-          );
-          log("info", "Sent Discord alert", {
-            count: newEntries.length,
-            channelId: channel.channelId,
-            firstPoll: !channel.hasPolledBefore,
-          });
-        }
-
-        await saveChannelState(config.databaseUrl, {
-          channelId: channel.channelId,
-          fingerprints: allFingerprints,
-          hasPolledBefore: true,
-        });
+        await deliverToChannel(config, sessions, channel);
       } catch (channelError) {
         log("error", "Failed to process channel; will retry next poll", {
           channelId: channel.channelId,
