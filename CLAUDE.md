@@ -17,9 +17,13 @@ date/location you configure in advance.
   (times, halls, seat prices) on sale for that fixed date, plus `appsource` /
   `device-key` headers and a Bearer auth token.
 - `src/showtimeDiff.ts` fingerprints each returned session entry and diffs against
-  the previous poll's fingerprints (persisted via `src/stateStore.ts` to
-  `STATE_FILE_PATH`) to find genuinely new sessions (e.g. a showtime just went on sale
-  for the watched date).
+  the previous poll's fingerprints (persisted via `src/stateStore.ts` to a `poll_state`
+  table in Postgres, `DATABASE_URL`) to find genuinely new sessions (e.g. a showtime
+  just went on sale for the watched date). The table is created automatically on
+  first connect — no manual migration needed. Postgres persistence means state works
+  identically across every hosting option (local/Docker/GitHub Actions/Vercel), unlike
+  the old file-based approach, which needed a persistent disk (Docker volume) or a
+  git-commit-back trick (GitHub Actions) and wouldn't have worked on Vercel at all.
 - `src/discordNotifier.ts` opens a DM channel with `DISCORD_USER_ID` via the bot's
   REST API (`DISCORD_BOT_TOKEN`) and posts a message there when new sessions appear,
   and a separate warning message if the auth token expires — sent once per failure
@@ -123,8 +127,8 @@ showtime added to the watched date) is what triggers an alert.
 
 - Local dev: `npm install && npm run dev`
 - Local prod build: `npm run build && npm start`
-- Docker: `docker compose up -d --build` (reads `.env`, persists state in the
-  `moviebot-data` volume)
+- Docker: `docker compose up -d --build` (reads `.env`; the `moviebot-data` volume
+  only holds the heartbeat file now, not state — state lives in Postgres)
 - One-shot (for GitHub Actions or manual testing): `npm run build && npm run run-once`
 - Refresh the auth token: `npm run refresh-token` (see above — needs
   `npx playwright install chromium` once first)
@@ -135,25 +139,26 @@ Vercel's Hobby-tier cron jobs are capped at once/day, too infrequent for ticket
 alerts, so this repo can instead run as a GitHub Actions scheduled workflow
 (`.github/workflows/poll-tickets.yml`), polling every 5 minutes via `npm run run-once`
 (GitHub's practical minimum cron interval is ~5 minutes; schedules can also be delayed
-under high platform load, and GitHub auto-disables a scheduled workflow after 60 days
-with zero commits to the repo — re-enable manually via the Actions tab's
-"Run workflow" button, or from GitHub CLI, if that ever happens).
+under high platform load — in practice, GitHub throttles frequent schedules well
+beyond that documented floor, often down to roughly hourly, especially on low-traffic
+repos; and GitHub auto-disables a scheduled workflow after 60 days with zero commits
+to the repo — re-enable manually via the Actions tab's "Run workflow" button, or from
+GitHub CLI, if that ever happens).
 
-Since GitHub Actions runners are ephemeral (nothing persists between runs), state
-lives in `state.json` at the repo root (not `data/state.json`, which is
-`.gitignore`d for local/Docker use) and the workflow commits it back to the repo after
-every run that changes it.
+Since state lives in Postgres (`DATABASE_URL`), GitHub Actions runners being ephemeral
+doesn't matter — no git-commit-back step needed (unlike the old file-based approach),
+so `permissions: contents: write` was removed from the workflow.
 
 Setup:
 
-1. Push this repo to GitHub (private recommended — the repo will contain
-   `state.json`, which is harmless bookkeeping data, but there's no reason to make it
-   public unless you want to).
+1. Push this repo to GitHub (private or public, doesn't matter — no state file gets
+   committed to it anymore).
 2. Repo → **Settings → Secrets and variables → Actions → New repository secret**, add:
    - `CINEPLEX_DEVICE_KEY`
    - `CINEPLEX_AUTH_TOKEN`
    - `DISCORD_BOT_TOKEN`
    - `DISCORD_USER_ID`
+   - `DATABASE_URL`
    (Never commit these — the workflow only ever references them as `${{ secrets.X }}`.)
 3. The workflow runs automatically on its schedule once merged to the default branch,
    or trigger it immediately via the **Actions** tab → "Poll Cineplex tickets" →
@@ -162,6 +167,20 @@ Setup:
    local/Docker mode — refresh it locally with `npm run refresh-token`, then update
    the `CINEPLEX_AUTH_TOKEN` (and `CINEPLEX_DEVICE_KEY`, if it also changed) repo
    secret with the new value.
+
+## State persistence: Postgres, works everywhere
+
+`src/stateStore.ts` stores poll state (fingerprints of seen sessions, and the
+one-time auth-alert flag) in a single-row `poll_state` table, created automatically
+on first connect via `CREATE TABLE IF NOT EXISTS` — no manual migration step. This
+replaced an earlier file-based approach (`data/state.json` locally, `state.json`
+committed back to the repo on GitHub Actions) specifically so the same code works
+unchanged across local/Docker/GitHub Actions/Vercel — Vercel serverless functions
+have no persistent filesystem between invocations, so file-based state wouldn't have
+survived there. `runOnce.ts` calls `process.exit(0)` after finishing since an open
+Postgres connection pool would otherwise keep the process alive; `index.ts` closes
+the pool explicitly on shutdown instead, since it needs the connection to stay open
+across its in-process loop.
 
 ## Environment variables
 

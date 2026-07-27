@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { loadConfig } from "./config.js";
-import { loadState, saveState, type PollState } from "./stateStore.js";
+import { loadState, saveState, closePool, type PollState } from "./stateStore.js";
 import { runPollCycle } from "./pollCycle.js";
 import { sendDiscordMessage } from "./discordNotifier.js";
 import { log } from "./logger.js";
@@ -27,7 +27,7 @@ async function touchHeartbeat(): Promise<void> {
  */
 async function main(): Promise<void> {
   const config = loadConfig();
-  let state: PollState = await loadState(config.stateFilePath);
+  let state: PollState = await loadState(config.databaseUrl);
   let isShuttingDown = false;
   let interruptSleep: (() => void) | undefined;
 
@@ -73,12 +73,14 @@ async function main(): Promise<void> {
 
   while (!isShuttingDown) {
     state = await runPollCycle(config, state);
-    await saveState(config.stateFilePath, state);
+    await saveState(config.databaseUrl, state);
     await touchHeartbeat();
     if (!isShuttingDown) {
       await sleep(config.pollIntervalMs);
     }
   }
+
+  await closePool();
 }
 
 main().catch((error: unknown) => {

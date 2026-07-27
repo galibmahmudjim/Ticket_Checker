@@ -18,7 +18,7 @@ export interface AppConfig {
   readonly discordBotToken: string;
   readonly discordUserId: string;
   readonly pollIntervalMs: number;
-  readonly stateFilePath: string;
+  readonly databaseUrl: string;
 }
 
 function requireEnv(name: string): string {
@@ -49,6 +49,6 @@ export function loadConfig(): AppConfig {
     discordBotToken: requireEnv("DISCORD_BOT_TOKEN"),
     discordUserId: requireEnv("DISCORD_USER_ID"),
     pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? "60000"),
-    stateFilePath: process.env.STATE_FILE_PATH ?? "./data/state.json",
+    databaseUrl: requireEnv("DATABASE_URL"),
   };
 }
