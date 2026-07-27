@@ -49,10 +49,12 @@ function formatSeatPrice(price: unknown): string | undefined {
 
 /**
  * Builds human-readable one-line descriptions of each show session in a get-shows
- * response — confirmed shape is a list of screenings, each with `screenTitle` and a
- * `showTimes` list of {showTime, seatPrices}. Returns "Hall N 11:20 (Regular ৳400,
- * Premium ৳450)" per showtime; falls back to the raw JSON for a screening that
- * doesn't match this shape. Returns an empty array if `sessions` isn't a list.
+ * response — confirmed shape is a list of screenings, each with `showDate`,
+ * `screenTitle`, and a `showTimes` list of {showTime, seatPrices}. Returns "2026-07-28
+ * Hall N 11:20 (Regular ৳400, Premium ৳450)" per showtime, reading the date straight
+ * from this response rather than relying on the caller's own copy of it; falls back
+ * to the raw JSON for a screening that doesn't match this shape. Returns an empty
+ * array if `sessions` isn't a list.
  */
 export function formatShowSessions(sessions: unknown): readonly string[] {
   if (!Array.isArray(sessions)) {
@@ -66,6 +68,7 @@ export function formatShowSessions(sessions: unknown): readonly string[] {
       continue;
     }
     const record = screening as Record<string, unknown>;
+    const date = firstDefined(record, COMMON_DATE_KEYS);
     const hall = record.screenTitle;
     const showTimes = record.showTimes;
 
@@ -73,6 +76,8 @@ export function formatShowSessions(sessions: unknown): readonly string[] {
       lines.push(JSON.stringify(record));
       continue;
     }
+
+    const datePrefix = date !== undefined ? `${date} ` : "";
 
     for (const showTime of showTimes) {
       if (typeof showTime !== "object" || showTime === null) {
@@ -83,7 +88,11 @@ export function formatShowSessions(sessions: unknown): readonly string[] {
       const seatPrices = Array.isArray(showTimeRecord.seatPrices) ? showTimeRecord.seatPrices : [];
       const priceText = seatPrices.map(formatSeatPrice).filter((part) => part !== undefined).join(", ");
 
-      lines.push(priceText ? `${hall} ${time} (${priceText})` : `${hall} ${String(time)}`);
+      lines.push(
+        priceText
+          ? `${datePrefix}${hall} ${time} (${priceText})`
+          : `${datePrefix}${hall} ${String(time)}`,
+      );
     }
   }
 
