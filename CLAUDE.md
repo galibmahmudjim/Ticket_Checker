@@ -20,22 +20,19 @@ date/location you configure in advance.
   the previous poll's fingerprints (persisted via `src/stateStore.ts` to a `poll_state`
   table in Postgres, `DATABASE_URL`) to find genuinely new sessions (e.g. a showtime
   just went on sale for the watched date). The table is created automatically on
-  first connect — no manual migration needed. Postgres persistence means state works
-  identically across every hosting option (local/Docker/GitHub Actions/Vercel), unlike
-  the old file-based approach, which needed a persistent disk (Docker volume) or a
-  git-commit-back trick (GitHub Actions) and wouldn't have worked on Vercel at all.
+  first connect — no manual migration needed.
 - `src/discordNotifier.ts` opens a DM channel with `DISCORD_USER_ID` via the bot's
   REST API (`DISCORD_BOT_TOKEN`) and posts a message there when new sessions appear,
   and a separate warning message if the auth token expires — sent once per failure
   episode (tracked via `state.authAlertSent`), not repeated on every poll, and reset
   once a poll succeeds again so a future failure alerts again. No gateway connection —
   just one-off REST calls, since we're only ever sending, never listening.
-- `src/pollCycle.ts` holds the shared "do one poll" logic (fetch → diff → alert →
-  return updated state) used by both entry points below.
-- `src/index.ts` is the long-lived entry point (local/Docker): loads config, sends a
-  one-time "bot started" DM, then loops on `POLL_INTERVAL_MS` calling `runPollCycle`.
-- `src/runOnce.ts` is the single-shot entry point (GitHub Actions cron): runs
-  `runPollCycle` exactly once and exits. No startup DM (would spam on every cron run).
+- `src/pollCycle.ts` holds the "do one poll" logic (fetch → diff → alert → return
+  updated state).
+- `src/index.ts` is the only entry point: loads config, sends a one-time "bot started"
+  DM, then loops forever on `POLL_INTERVAL_MS` calling `runPollCycle`, persisting
+  state after every cycle. No cron/scheduler involved — the process itself stays
+  running and paces its own polling via `setTimeout`.
 
 ## Discord DM setup
 
@@ -74,8 +71,8 @@ the CAPTCHA itself. Requires `playwright` (`npm install`, then once:
 not part of the recurring poll loop.
 
 When the token expires, the bot detects the 401 and posts a Discord warning asking you
-to run `npm run refresh-token` (or repeat the manual DevTools steps) — it will not try
-to get a new one on its own.
+to run `npm run refresh-token` (or repeat the manual DevTools steps), then restart the
+process — it will not try to get a new one on its own.
 
 If the real header name isn't `Authorization: Bearer <token>`, override it with
 `CINEPLEX_AUTH_HEADER_NAME` in `.env` to match what DevTools shows (the helper script
@@ -123,97 +120,24 @@ JSON for a screening that doesn't match this shape. `showtimeDiff.ts` fingerprin
 whole screening entry regardless of schema, so a genuinely new session (e.g. a new
 showtime added to the watched date) is what triggers an alert.
 
-## Running
-
-- Local dev: `npm install && npm run dev`
-- Local prod build: `npm run build && npm start`
-- Docker: `docker compose up -d --build` (reads `.env`; the `moviebot-data` volume
-  only holds the heartbeat file now, not state — state lives in Postgres)
-- One-shot (for GitHub Actions or manual testing): `npm run build && npm run run-once`
-- Refresh the auth token: `npm run refresh-token` (see above — needs
-  `npx playwright install chromium` once first)
-
-## Running on GitHub Actions instead of Vercel/Docker
-
-Vercel's Hobby-tier cron jobs are capped at once/day, too infrequent for ticket
-alerts, so this repo can instead run as a GitHub Actions scheduled workflow
-(`.github/workflows/poll-tickets.yml`), polling every 5 minutes via `npm run run-once`
-(GitHub's practical minimum cron interval is ~5 minutes; schedules can also be delayed
-under high platform load — in practice, GitHub throttles frequent schedules well
-beyond that documented floor, often down to roughly hourly, especially on low-traffic
-repos; and GitHub auto-disables a scheduled workflow after 60 days with zero commits
-to the repo — re-enable manually via the Actions tab's "Run workflow" button, or from
-GitHub CLI, if that ever happens).
-
-Since state lives in Postgres (`DATABASE_URL`), GitHub Actions runners being ephemeral
-doesn't matter — no git-commit-back step needed (unlike the old file-based approach),
-so `permissions: contents: write` was removed from the workflow.
-
-Setup:
-
-1. Push this repo to GitHub (private or public, doesn't matter — no state file gets
-   committed to it anymore).
-2. Repo → **Settings → Secrets and variables → Actions → New repository secret**, add:
-   - `CINEPLEX_DEVICE_KEY`
-   - `CINEPLEX_AUTH_TOKEN`
-   - `DISCORD_BOT_TOKEN`
-   - `DISCORD_USER_ID`
-   - `DATABASE_URL`
-   (Never commit these — the workflow only ever references them as `${{ secrets.X }}`.)
-3. The workflow runs automatically on its schedule once merged to the default branch,
-   or trigger it immediately via the **Actions** tab → "Poll Cineplex tickets" →
-   **Run workflow**.
-4. When `CINEPLEX_AUTH_TOKEN` expires, you'll get the same Discord warning DM as
-   local/Docker mode — refresh it locally with `npm run refresh-token`, then update
-   the `CINEPLEX_AUTH_TOKEN` (and `CINEPLEX_DEVICE_KEY`, if it also changed) repo
-   secret with the new value.
-
-## State persistence: Postgres, works everywhere
+## State persistence: Postgres
 
 `src/stateStore.ts` stores poll state (fingerprints of seen sessions, and the
 one-time auth-alert flag) in a single-row `poll_state` table, created automatically
-on first connect via `CREATE TABLE IF NOT EXISTS` — no manual migration step. This
-replaced an earlier file-based approach (`data/state.json` locally, `state.json`
-committed back to the repo on GitHub Actions) specifically so the same code works
-unchanged across local/Docker/GitHub Actions/Vercel — Vercel serverless functions
-have no persistent filesystem between invocations, so file-based state wouldn't have
-survived there. `runOnce.ts` calls `process.exit(0)` after finishing since an open
-Postgres connection pool would otherwise keep the process alive; `index.ts` closes
-the pool explicitly on shutdown instead, since it needs the connection to stay open
-across its in-process loop.
+on first connect via `CREATE TABLE IF NOT EXISTS` — no manual migration step.
+`index.ts` closes the connection pool explicitly on shutdown (SIGINT/SIGTERM).
 
-## Running on Vercel instead of GitHub Actions
+## Running
 
-`api/poll.ts` is a Vercel serverless function equivalent to `runOnce.ts` — runs one
-poll cycle and returns an HTTP response instead of exiting a process, since Vercel
-Cron triggers a URL rather than a script. `vercel.json` schedules it via `crons`. This
-only works because state lives in Postgres now (see above) — Vercel functions have no
-persistent local disk between invocations, so the old file-based state store couldn't
-have survived here.
+- Local dev: `npm install && npm run dev`
+- Local prod: `npm run build && npm start`
+- Refresh the auth token: `npm run refresh-token` (see above — needs
+  `npx playwright install chromium` once first)
 
-Setup:
-
-1. Import this repo into Vercel (vercel.com → New Project → pick the GitHub repo).
-2. Project → **Settings → Environment Variables**, add the same values as `.env.example`
-   (`CINEPLEX_DEVICE_KEY`, `CINEPLEX_AUTH_TOKEN`, `CINEPLEX_AUTH_HEADER_NAME`,
-   `DISCORD_BOT_TOKEN`, `DISCORD_USER_ID`, `DATABASE_URL`), plus a `CRON_SECRET` you
-   make up (any random string) — Vercel automatically sends it as
-   `Authorization: Bearer <CRON_SECRET>` on cron-triggered requests, and `api/poll.ts`
-   rejects any request that doesn't carry it, so the endpoint can't be triggered by
-   anyone who finds the URL.
-3. Deploy. Vercel registers the cron schedule from `vercel.json` automatically.
-4. **Vercel Hobby's cron cap is once/day** — `*/5 * * * *` in `vercel.json` needs
-   Vercel Pro to actually run that often; Hobby will reject or silently downgrade it.
-5. When `CINEPLEX_AUTH_TOKEN` expires, you'll get the same Discord warning DM as
-   other modes — refresh it locally with `npm run refresh-token`, then update the
-   `CINEPLEX_AUTH_TOKEN` (and `CINEPLEX_DEVICE_KEY`, if it also changed) in Vercel's
-   environment variables and redeploy (or just wait for the next cron tick to pick up
-   the updated env var, if Vercel applies it without a redeploy).
-
-If you switch to Vercel, disable or delete `.github/workflows/poll-tickets.yml` —
-running both schedulers polls Cineplex twice as often for no benefit (Postgres-backed
-fingerprinting prevents duplicate alerts either way, but it's still pointless
-duplication).
+There's no scheduler, cron job, or container involved by design — `npm start` (or
+`npm run dev`) runs the whole thing: it stays running and paces its own polling via
+`POLL_INTERVAL_MS`. Keep the process alive on whatever machine you choose to run it
+on for as long as you want it watching.
 
 ## Environment variables
 
