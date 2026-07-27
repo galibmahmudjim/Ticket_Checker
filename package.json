@@ -10,7 +10,7 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc -p tsconfig.check.json",
-    "test": "tsx test/pollLock.mutualExclusion.test.ts && tsx test/guildSync.channelSelection.test.ts && tsx test/pollEndpoint.behaviour.test.ts",
+    "test": "tsx test/pollLock.mutualExclusion.test.ts && tsx test/guildSync.channelSelection.test.ts && tsx test/pollEndpoint.behaviour.test.ts && tsx test/pollStatus.tracking.test.ts",
     "refresh-token": "tsx scripts/refreshToken.ts"
   },
   "dependencies": {

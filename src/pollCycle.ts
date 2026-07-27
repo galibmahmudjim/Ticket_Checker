@@ -61,10 +61,17 @@ async function deliverToChannel(
  * instead of staying silent until something changes. On auth failure it posts a warning
  * exactly once (tracked via the global state.authAlertSent) asking for a fresh
  * token, then stays silent on repeat failures until a poll succeeds again, at which
- * point the flag resets so a future failure alerts again. Returns the updated global
- * PollState for the caller to persist; never throws — poll and Discord failures
- * (including a single channel's) are logged and swallowed so they don't crash the
- * caller's loop or block other channels.
+ * point the flag resets so a future failure alerts again.
+ *
+ * Every path — success, auth failure, and any other error — stamps `lastPolledAt` and
+ * a `lastPollStatus` onto the returned state, so the record is of the last *attempt*
+ * rather than the last success. That is what makes a stalled or failing bot visible
+ * via `/api/status` instead of merely silent, and because it lives here both entry
+ * points record it without either needing to know about the other.
+ *
+ * Returns the updated global PollState for the caller to persist; never throws — poll
+ * and Discord failures (including a single channel's) are logged and swallowed so they
+ * don't crash the caller's loop or block other channels.
  */
 export async function runPollCycle(config: AppConfig, state: PollState): Promise<PollState> {
   try {
@@ -82,8 +89,15 @@ export async function runPollCycle(config: AppConfig, state: PollState): Promise
       }
     }
 
-    return { authAlertSent: false };
+    return {
+      authAlertSent: false,
+      lastPolledAt: new Date(),
+      lastPollStatus: "ok",
+      lastSessionCount: sessions.length,
+    };
   } catch (error) {
+    const attempt = { lastPolledAt: new Date(), lastSessionCount: null } as const;
+
     if (error instanceof CineplexAuthError) {
       log("warn", "Cineplex auth token expired or invalid", { message: error.message });
       if (!state.authAlertSent) {
@@ -99,14 +113,14 @@ export async function runPollCycle(config: AppConfig, state: PollState): Promise
         } catch (notifyError) {
           log("error", "Failed to send auth-expiry alert", { error: String(notifyError) });
         }
-        return { authAlertSent: true };
+        return { ...attempt, authAlertSent: true, lastPollStatus: "auth-error" };
       }
-      return state;
+      return { ...attempt, authAlertSent: state.authAlertSent, lastPollStatus: "auth-error" };
     }
 
     log("error", "Poll failed", {
       error: error instanceof Error ? error.message : String(error),
     });
-    return state;
+    return { ...attempt, authAlertSent: state.authAlertSent, lastPollStatus: "error" };
   }
 }

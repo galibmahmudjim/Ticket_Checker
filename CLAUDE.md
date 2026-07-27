@@ -59,6 +59,13 @@ date/location you configure in advance.
   - `src/index.ts` — used by `npm run dev` / `npm start` locally, and by any always-on
     host. Loops forever on `POLL_INTERVAL_MS` via `setTimeout`, pacing itself in
     process. Not used on Vercel at all.
+- `api/status.ts` answers "is it still checking?". `runPollCycle` stamps
+  `last_polled_at` / `last_poll_status` / `last_session_count` onto `poll_state` on
+  every attempt — success or failure — so the record survives the process and both
+  entry points populate it without knowing about each other. `/api/status` reads that
+  back as JSON with a `healthy` flag that goes false after three missed intervals.
+  This exists because the bot is *supposed* to be silent for weeks: without it,
+  "no tickets yet" and "died four hours ago" look identical from Discord.
 
 ## Discord alert setup
 
@@ -233,7 +240,8 @@ What `api/poll.ts` does per request:
 ### Trade-offs of this design
 
 - **Nothing polls unless something triggers it.** There is no self-starting behaviour,
-  by design. If the scheduler stops, the bot silently stops watching.
+  by design. If the scheduler stops, the bot silently stops watching — check
+  `/api/status` (below) rather than inferring from Discord being quiet.
 - **Cadence granularity is the scheduler's**, not `POLL_INTERVAL_MS`'s.
   `POLL_INTERVAL_MS` can only slow polling down relative to the trigger, never speed it
   up.
@@ -241,6 +249,32 @@ What `api/poll.ts` does per request:
   REST polling rather than Gateway events.
 - If you would rather not depend on an external trigger at all, `src/index.ts` still
   runs the whole thing as one always-on process on any host that allows it.
+
+## Checking it is still alive
+
+`GET /api/status` — no auth, safe to bookmark:
+
+```json
+{
+  "healthy": true,
+  "watching": { "movie": "…", "movieId": 1688, "showDate": "2026-07-31", "location": 2 },
+  "lastPoll": { "at": "…Z", "minutesAgo": 3, "status": "ok", "sessionsOnSale": 0 },
+  "nextPollDueAt": "…Z",
+  "pollIntervalMinutes": 10,
+  "alertChannels": 2,
+  "authTokenExpired": false
+}
+```
+
+`healthy` goes false after three missed poll intervals. `status` is `ok`,
+`auth-error`, or `error`, and is stamped on every *attempt*, so a bot that is running
+but failing every poll shows `healthy: true` with `status: "error"` — distinguishable
+from one that has stopped entirely. `sessionsOnSale: 0` is the normal pre-release
+state; it becoming non-zero is the event the whole bot exists to catch.
+
+Point a pinger's keyword check at `"healthy":true` to be told when it stalls, rather
+than finding out on the day tickets drop. Note the timestamps are UTC — Bangladesh is
+UTC+6.
 
 ## Environment variables
 
